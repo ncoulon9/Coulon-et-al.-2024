@@ -1,0 +1,868 @@
+---
+title: "06_change_in_distribution_area"
+output: html_document
+date: '2022-03-07'
+editor_options: 
+  chunk_output_type: console
+---
+
+# LOADING PACKAGE
+```{r}
+if(!require(tidyverse)){install.packages("tidyverse"); library(tidyverse)}
+if(!require(raster)){install.packages("raster"); library(raster)}
+if(!require(ncdf4)){install.packages("ncdf4"); library(ncdf4)}
+if(!require(Hmsc)){install.packages("Hmsc"); library(Hmsc)}
+if(!require(sf)){install.packages("sf"); library(sf)}
+if(!require(ggplot2)){install.packages("ggplot2"); library(ggplot2)}
+if(!require(ggalluvial)){install.packages("ggalluvial"); library(ggalluvial)}
+if(!require(rnaturalearth)){install.packages("rnaturalearth"); library(rnaturalearth)}
+if(!require(rnaturalearthdata)){install.packages("rnaturalearthdata"); library(rnaturalearthdata)}
+if(!require(ggthemes)){install.packages("ggthemes"); library(ggthemes)}
+if(!require(rgeos)){install.packages("rgeos"); library(rgeos)}
+if(!require(Kendall)){install.packages("Kendall"); library(Kendall)}
+if(!require(viridis)){install.packages("viridis"); library(viridis)}
+if(!require(plotly)){install.packages("plotly"); library(plotly)}
+if(!require(Hmisc)){install.packages("Hmisc"); library(Hmisc)}
+if(!require(factoextra)){install.packages("factoextra"); library(factoextra)}
+if(!require(FactoMineR)){install.packages("FactoMineR"); library(FactoMineR)}
+if(!require(trend)){install.packages("trend"); library(trend)}
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+```
+
+# SET DIRECTORIES
+```{r}
+localDir = "." 
+dataDir = file.path(localDir, "data") 
+ModelDir = file.path(localDir, "models") 
+MixingDir = file.path(localDir, "mixing")
+MFDir = file.path(localDir, "model_fit")
+```
+
+# LOADING DATA
+## Grid
+```{r}
+grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
+grid <- grid[, -1]
+
+grid_raster <- raster(paste0(dataDir, "/grid/baseline.grd"))
+area_raster <- area(grid_raster)
+area_raster_df <- as.data.frame(area_raster, xy = T)
+colnames(area_raster_df) <- c("Lon", "Lat", "area")
+
+area_raster_df$Lon <- round(area_raster_df$Lon, digits = 5)
+area_raster_df$Lat <- round(area_raster_df$Lat, digits = 5)
+grid$Lon <- round(grid$Lon, digits = 5)
+grid$Lat <- round(grid$Lat, digits = 5)
+
+grid <- merge(grid, area_raster_df)
+grid$depth <- abs(grid$depth)
+```
+```{r}
+ggplot(world) +
+  geom_tile(data = grid, 
+                 aes(x = Lon, y = Lat, 
+                 fill = depth), 
+                 size = .85) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(grid$Lon), max(grid$Lon)), 
+           ylim = c(min(grid$Lat), max(grid$Lat))) +
+      theme_bw(15) +
+      theme(panel.grid = element_blank()) +
+      labs( fill = "Depth")+ 
+      xlab("Longitude") + 
+      ylab("Latitude")
+```
+
+## Predictions
+```{r}
+load(paste0(ModelDir, "/pa_traits_phylo_probit_thin_3.RData"))
+load(paste0(MFDir, "/mean_predictions/EpredY_list_traits_phylo_3.Rdata"))
+```
+
+# HABITAT SUITABILITY SIZE
+```{r}
+weighted_area <- data.frame(taxon = NA, Year = NA, value = NA)
+start <- 1997
+
+for (i in 1:length(EpredY_list)){
+  
+  EpredY_i <- EpredY_list[[i]]
+  grid_i <- dplyr::filter(grid, Year == start)
+  EpredY_i <- data.frame(cbind(grid_i[, 1:2], area = grid_i[, 11]), EpredY_i)
+  
+  weighted_area_i <- (EpredY_i$area * EpredY_i[, 4:ncol(EpredY_i)]) 
+  
+  weighted_area <- rbind(weighted_area, 
+                         data.frame(taxon = colnames(weighted_area_i), Year = start, value = colSums(weighted_area_i)))
+  
+  start <- start + 1 
+}
+
+weighted_area <- weighted_area[-1, ]
+
+write.csv(weighted_area, file = paste0(MFDir, "/weighted_area_time_series_traits_3.csv"), row.names = F)
+
+base::colSums(grid_i[, 5:11]) # total surface area
+```
+
+## Stat
+```{r}
+weighted_area <- read.csv(paste0(MFDir, "/weighted_area_time_series_traits_3.csv"))
+
+excel <- weighted_area
+excel$value <- round(excel$value)
+
+excel <- pivot_wider(excel, values_from = value, names_from = taxon)
+excel
+write.csv(excel, paste0(MFDir, "./paper_weighted_area_time_series_traits_3.csv"), row.names = F)
+```
+
+### Sen
+
+Estimates of the regression coefficient based on Kendall's tau
+
+```{r}
+trend_stat <- data.frame(Sen = NA, pvalue = NA, taxon = NA, change = NA)
+
+for (i in levels(as.factor(weighted_area$taxon))){
+  factor_i <- filter(weighted_area, taxon == i)
+  
+  try(test_i <- sens.slope(factor_i$value, conf.level = 0.95))
+  trend_i <- data.frame(Sen = test_i$estimates, pvalue = test_i$p.value, taxon = i)
+  
+  if(trend_i$pvalue < 0.05 & trend_i$Sen > 0){
+    trend_i$change <- "Increasing"
+  }else if(trend_i$pvalue < 0.05 & trend_i$Sen < 0){
+    trend_i$change <- "Decreasing"
+  }else{
+    trend_i$change <- "Unchanged"
+  }
+  
+  trend_stat <- rbind(trend_stat, trend_i)
+}
+
+trend_stat <- trend_stat[-1, ]
+trend_stat
+
+write.csv(trend_stat, paste0(MFDir, "/weighted_area_trend_stat_traits_3.csv"), row.names = F)
+```
+
+## Plots
+```{r}
+weighted_area <- read.csv(paste0(MFDir, "/weighted_area_time_series_traits_3.csv"))
+weighted_area_stat <- read.csv(paste0(MFDir, "/weighted_area_trend_stat_traits_3.csv"))
+```
+```{r}
+ggplot(aes(x = Year, y = value), data = weighted_area) +
+  geom_point(aes(color = taxon)) +
+  scale_color_manual(values = c("black", "black", "red", "red", "red", "black", "black", "red", "black")) +
+  scale_fill_manual(values = c("black", "black", "red", "red", "red", "black", "black", "red", "black")) +
+  theme_bw(15)+
+  labs(col = NULL, y = "Weighted area (km2)", x = NULL) +
+  theme(panel.grid = element_blank()) +
+  theme(legend.position = "bottom") +
+  geom_smooth(aes(color = taxon, fill = taxon), method = "lm") 
+```
+```{r}
+weighted_area_stat$time_series <- (weighted_area_stat$Sen * 24) / 1051523.165
+```
+```{r}
+area <- ggplot() +
+  geom_col(aes (y = taxon, x = Sen, fill = taxon), data = weighted_area_stat) +
+  theme_bw(150) +
+  theme(panel.grid = element_blank()) +
+  scale_y_discrete(limits = c("Squalus_acanthias",
+                              "Scyliorhinus_stellaris",
+                              "Scyliorhinus_canicula",
+                              "Raja_montagui",
+                              "Raja_clavata",
+                              "Raja_brachyura",
+                              "Mustelus_asterias",
+                              "Leucoraja_naevus",
+                              "Amblyraja_radiata")) +
+  scale_fill_manual(values = c("#0d2fb1ff","#999999ff", "#e69f00ff", "#56b4e9ff","#009e73ff", "#fff400ff","#0085f2ff","#e98377ff","#ff71fcff")) +
+  guides(fill = "none")
+  
+
+try(dev.off())  
+  png(paste0("./output/traits_phylo_3/area_change.png"), height = 1500, width = 3000)
+    print(area)
+    dev.off() 
+```
+
+
+
+# PRESENCE PROBABILITY IN SPACE
+
+## Dataframe remaking
+```{r}
+list_csv <- list.files(paste0(dataDir, "/grid/predictions"), pattern = ".csv", full.names = TRUE)
+all_csv <- lapply(list_csv, readr::read_csv)
+df_csv <- dplyr::bind_rows(all_csv)
+write.csv(df_csv, file = paste0(MFDir, "/df_preds_traits_3.csv"), row.names = F)
+```
+
+## Trends
+```{r}
+df_predY <- read.csv(paste0(MFDir, "/df_preds_traits_3.csv"))
+df_predY <- unite(df_predY, id, c("Lon", "Lat"), remove = F)
+
+trend_cell <- data.frame(id = NA, Sen = NA, pvalue = NA, taxon = NA)
+
+for (i in levels(as.factor(df_predY$taxon))){
+  
+   taxon_i <- i
+   cat(paste("----", Sys.time(), "----", taxon_i, "trends research began ----\n", sep = " "))
+   predY_i <- dplyr::filter(df_predY, taxon == i)
+   
+   for (j in levels(as.factor(predY_i$id))){
+     
+     cell_j <- dplyr::filter(predY_i, id == j)
+     
+     try(test_i <- sens.slope(cell_j$pred_sp, conf.level = 0.95))
+     
+     trend_i <- data.frame(Sen = test_i$estimates, pvalue = test_i$p.value, taxon = taxon_i)
+     
+     if(trend_i$pvalue == "NaN"){
+       trend_cell <- rbind(trend_cell, data.frame(id = i, Sen = NA, pvalue = NA, taxon = i))
+       }else if(trend_i$pvalue < 0.05){
+        trend_cell <- rbind(trend_cell, data.frame(id = j, trend_i))
+        }else{
+        trend_cell <- rbind(trend_cell, data.frame(id = i, Sen = NA, pvalue = NA, taxon = i))
+      } 
+   }
+}
+ 
+trend_cell <- trend_cell[-1, ]
+trend_cell <- separate(trend_cell, id, c("Lon", "Lat"), sep = "_")
+trend_cell$Lon <- as.numeric(trend_cell$Lon)
+trend_cell$Lat <- as.numeric(trend_cell$Lat)
+trend_cell <- na.omit(trend_cell)
+
+write.csv(trend_cell, paste0(MFDir, "./trend_cell_traits_3.csv"), row.names = F)
+```
+```{r}
+grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
+trend_cell <- read.csv(paste0(MFDir, "./trend_cell_traits_3.csv"))
+
+for (i in levels(as.factor(trend_cell$taxon))){
+  trend_cell_i <- dplyr::filter(trend_cell, taxon == i)
+  taxon_i <- sub("_", " ", i)
+  
+  sp <- ggplot(world) +
+    geom_tile(data = grid, aes(x = Lon, y = Lat), fill = "#eee9e9") +
+    geom_tile(data = trend_cell_i, aes(x = Lon, y = Lat, fill = Sen)) +
+    geom_sf(data = world, fill = alpha("lightgrey", 1)) +
+    coord_sf(xlim = c(min(df_predY$Lon), max(df_predY$Lon)), 
+           ylim = c(min(df_predY$Lat), max(df_predY$Lat))) +
+    theme_bw(150) +
+    theme(panel.grid = element_blank(),
+          legend.title = element_blank(), legend.position = "bottom",
+          title = element_blank()) +
+    scale_fill_gradient2(low = "#00c2c7", mid = "white", high = "#eb8c00", midpoint = 0, 
+                         breaks = c(min(trend_cell_i$Sen, na.rm = T), 0, max(trend_cell_i$Sen, na.rm = T))) +
+    guides(fill = guide_colourbar(barwidth = 90,
+                                barheight = 2))
+  
+  try(dev.off())  
+    png(paste0("./output/traits_phylo_3/", i,  "_trend_poly_traits_3.png"), height = 3000, width = 2100)
+    print(sp)
+    dev.off()
+}
+```
+
+# HABITAT SUITABILITY CENTROIDES (LON/LAT - DEPTH)
+
+## Calcul
+```{r}
+centroides <- data.frame(Year = NA, taxon = NA, depth = NA, Lat = NA, Lon = NA, geom = NA)
+start <- 1997
+
+for (i in 1:length(EpredY_list)){
+  
+  EpredY_i <- EpredY_list[[i]]
+  EpredY_i <- data.frame(grid, EpredY_i)
+  year_i <- start
+  df_w_mean_i <- data.frame(Year = NA, taxon = NA, depth = NA, Lat = NA, Lon = NA, geom = NA)
+  df_w_sd_i <- data.frame(Year = NA, taxon = NA, depth = NA, Lat = NA, Lon = NA, geom = NA)
+  
+  for(j in 11:ncol(EpredY_i)){
+    taxon_j <- colnames(EpredY_i[j])
+    
+    w_mean_depth_j <- weighted.mean(EpredY_i$depth, EpredY_i[, j])
+    w_mean_Lat_j <- weighted.mean(EpredY_i$Lat, EpredY_i[, j])
+    w_mean_Lon_j <- weighted.mean(EpredY_i$Lon, EpredY_i[, j])
+    
+    df_w_mean_j <- data.frame(Year = year_i, taxon = taxon_j, depth = w_mean_depth_j, Lat = w_mean_Lat_j, Lon = w_mean_Lon_j, geom = "mean")
+    df_w_mean_i <- rbind(df_w_mean_i, df_w_mean_j)
+    
+    w_sd_depth_j <- sqrt(wtd.var(EpredY_i$depth, EpredY_i[, j]))
+    w_sd_Lat_j <- sqrt(wtd.var(EpredY_i$Lat, EpredY_i[, j]))
+    w_sd_Lon_j <- sqrt(wtd.var(EpredY_i$Lon, EpredY_i[, j]))
+    
+    df_w_sd_j <- data.frame(Year = year_i, taxon = taxon_j, depth = w_sd_depth_j, Lat = w_sd_Lat_j, Lon = w_sd_Lon_j, geom = "standard_deviation")
+    df_w_sd_i <- rbind(df_w_sd_i, df_w_sd_j)
+  }
+  
+  centroides <- rbind(centroides, df_w_mean_i)
+  centroides <- rbind(centroides, df_w_sd_i)
+  
+  centroides <- na.omit(centroides)
+  start <- start + 1 
+}
+
+centroides <- pivot_longer(centroides, !c(Year, taxon, geom))
+ 
+
+write.csv(centroides, file = paste0(MFDir, "/centroides_time_series_traits_3.csv"), row.names = F)
+```
+
+## Plots
+```{r}
+centroides <- read.csv(paste0(MFDir, "/centroides_time_series_traits_3.csv"))
+centroides <- dplyr::filter(centroides, geom == "mean")
+
+centroides <- relocate(centroides, Year, .after = taxon)
+centroides <- centroides <- pivot_wider(centroides, values_from = value, names_from = name)
+
+plot_names <- c('Amblyraja_radiata' = "Amblyraja radiata",
+                'Leucoraja_naevus' = "Leucoraja naevus",
+                'Mustelus_asterias' = "Mustelus asterias",
+                'Raja_brachyura' = "Raja brachyura",
+                'Raja_clavata' = "Raja clavata",
+                'Raja_montagui' = "Raja montagui",
+                'Scyliorhinus_canicula' = "Scyliorhinus canicula",
+                'Scyliorhinus_stellaris' = "Scyliorhinus stellaris",
+                "Squalus_acanthias" = 'Squalus acanthias')
+
+ggplot() +
+  geom_point(aes(x = Lon, y = Lat, col = Year), data = centroides) +
+  facet_wrap(taxon ~ ., scales = "free", labeller = as_labeller(plot_names)) +
+  theme_bw(15) +
+  theme(panel.grid = element_blank()) +
+  theme(legend.position = "bottom") +
+  labs(x = "Longitude", y = "Latitude") +
+  theme(plot.title = element_text(face = "italic")) +
+  scale_colour_viridis_c()
+```
+```{r}
+centroides <- read.csv(paste0(MFDir, "/centroides_time_series_traits_3.csv"))
+
+plot_names <- c('depth' = "Depth (m)",
+                'Lon' = "Longitude (degrees)",
+                'Lat' = "Latitude (degrees))")
+```
+```{r}
+centroides <- dplyr::filter(centroides, geom == "mean")
+  
+ggplot(aes(x = Year, y = value, col = taxon), data = centroides) +
+  geom_line() +
+  theme_bw(15)+
+  labs(col = NULL, y = "Centroides", x = NULL) +
+  theme(panel.grid = element_blank()) +
+  facet_wrap(. ~ name, 
+             scales = "free", 
+             labeller = as_labeller(plot_names)) +
+  theme(legend.position = "bottom") 
+ 
+```
+
+## Statistics
+### Sen's estimates
+```{r}
+centroides <- read.csv(paste0(MFDir, "/centroides_time_series_traits_3.csv"))
+centroides <- dplyr::filter(centroides, geom == "mean")
+
+centroides <- relocate(centroides, Year, .after = taxon)
+centroides <- centroides <- pivot_wider(centroides, values_from = value, names_from = name)
+trend_stat <- data.frame(Sen = NA, pvalue = NA, taxon = NA, geo = NA)
+
+for (i in levels(as.factor(centroides$taxon))){
+  sp_i <- filter(centroides, taxon == i)
+  
+  try(test_lon_i <- sens.slope(sp_i$Lon, conf.level = 0.95))
+  trend_i <- data.frame(Sen = test_lon_i$estimates, 
+                        pvalue = test_lon_i$p.value, 
+                        taxon = i, 
+                        geo = "Lon")
+ 
+  try(test_lat_i <- sens.slope(sp_i$Lat, conf.level = 0.95))
+  trend_i <- rbind(trend_i, 
+                   data.frame(Sen = test_lat_i$estimates, 
+                              pvalue = test_lat_i$p.value,
+                              taxon = i,
+                              geo = "Lat"))
+  
+  try(test_depth_i <- sens.slope(sp_i$depth, conf.level = 0.95))
+  trend_i <- rbind(trend_i, 
+                   data.frame(Sen = test_depth_i$estimates,
+                              pvalue = test_depth_i$p.value, 
+                              taxon = i, 
+                              geo = "depth"))
+  
+  trend_stat <- rbind(trend_stat, trend_i)
+}
+
+trend_stat <- trend_stat[-1, ]
+write.csv(trend_stat, file = paste0(MFDir, "/centroides_time_series_stat_traits_3.csv"), row.names = F)
+
+trend_stat <- filter(trend_stat, pvalue < 0.05)
+trend_stat
+```
+
+### Plot - change
+
+Dans le système géodésique WGS 84, au niveau de 54° de latitude nord, un degré de longitude équivaut à 65,576 km
+
+```{r}
+trend_stat <- read.csv(paste0(MFDir, "/centroides_time_series_stat_traits_3.csv"))
+trend_stat <- dplyr::filter(trend_stat, taxon != "substrate_diversity")
+trend_stat <- pivot_wider(trend_stat, names_from = geo, values_from = c(Sen, pvalue))
+
+
+trend_stat$Sen_Lon_km <- (trend_stat$Sen_Lon) * 65.576
+trend_stat$Sen_Lat_km <- (trend_stat$Sen_Lat) * 65.576
+
+trend_stat$Lon_time_series <- (trend_stat$Sen_Lon_km) * 24
+trend_stat$Lat_time_series <- (trend_stat$Sen_Lat_km) * 24
+trend_stat$depth_time_series <- (trend_stat$Sen_depth) * 24
+```
+```{r}
+Lon <- ggplot() +
+  geom_col(aes (y = taxon, x = Sen_Lon_km, fill = taxon), data = trend_stat) +
+  theme_bw(150) +
+  theme(panel.grid = element_blank()) +
+  scale_y_discrete(limits = c("Squalus_acanthias",
+                              "Scyliorhinus_stellaris",
+                              "Scyliorhinus_canicula",
+                              "Raja_montagui",
+                              "Raja_clavata",
+                              "Raja_brachyura",
+                              "Mustelus_asterias",
+                              "Leucoraja_naevus",
+                              "Amblyraja_radiata")) +
+  scale_fill_manual(values = c("#0d2fb1ff","#999999ff", "#e69f00ff", "#56b4e9ff","#009e73ff", "#fff400ff","#0085f2ff","#e98377ff","#ff71fcff")) +
+  guides(fill = "none")
+
+try(dev.off())  
+  png(paste0("./output/traits_phylo_3/Lon_change.png"), height = 1500, width = 3000)
+    print(Lon)
+    dev.off() 
+```
+```{r}
+Lat <- ggplot() +
+  geom_col(aes (y = taxon, x = Sen_Lat_km, fill = taxon), data = trend_stat) +
+  theme_bw(150) +
+  theme(panel.grid = element_blank())  +
+  scale_y_discrete(limits = c("Squalus_acanthias",
+                              "Scyliorhinus_stellaris",
+                              "Scyliorhinus_canicula",
+                              "Raja_montagui",
+                              "Raja_clavata",
+                              "Raja_brachyura",
+                              "Mustelus_asterias",
+                              "Leucoraja_naevus",
+                              "Amblyraja_radiata")) +
+  scale_fill_manual(values = c("#0d2fb1ff","#999999ff", "#e69f00ff", "#56b4e9ff","#009e73ff", "#fff400ff","#0085f2ff","#e98377ff","#ff71fcff"))+
+  guides(fill = "none")
+
+try(dev.off())  
+  png(paste0("./output/traits_phylo_3/Lat_change.png"), height = 1500, width = 3000)
+    print(Lat)
+    dev.off() 
+```
+```{r}
+depth <- ggplot() +
+  geom_col(aes (y = taxon, x = Sen_depth, fill = taxon), data = trend_stat) +
+  theme_bw(150) +
+  theme(panel.grid = element_blank())  +
+  scale_y_discrete(limits = c("Squalus_acanthias",
+                              "Scyliorhinus_stellaris",
+                              "Scyliorhinus_canicula",
+                              "Raja_montagui",
+                              "Raja_clavata",
+                              "Raja_brachyura",
+                              "Mustelus_asterias",
+                              "Leucoraja_naevus",
+                              "Amblyraja_radiata")) +
+  scale_fill_manual(values = c("#0d2fb1ff","#999999ff", "#e69f00ff", "#56b4e9ff","#009e73ff", "#fff400ff","#0085f2ff","#e98377ff","#ff71fcff"))+
+  guides(fill = "none")
+
+try(dev.off())  
+  png(paste0("./output/traits_phylo_3/depth_change.png"), height = 1500, width = 3000)
+    print(depth)
+    dev.off() 
+```
+
+# HABITAT SUITABILITY - FIRST/LAST DECILE
+
+## Calcul
+```{r}
+centroides_deciles <- data.frame(Year = NA, taxon = NA, depth = NA, Lat = NA, Lon = NA, geom = NA)
+start <- 1997
+
+for (i in 1:length(EpredY_list)){
+  
+  EpredY_i <- EpredY_list[[i]]
+  EpredY_i <- data.frame(grid, EpredY_i)
+  year_i <- start
+  
+  df_w_mean_i <- data.frame(Year = NA, taxon = NA, depth = NA, Lat = NA, Lon = NA, geom = NA)
+  
+  for(j in 12:ncol(EpredY_i)){
+    
+    EpredY_i_j <- EpredY_i
+    taxon_j <- colnames(EpredY_i_j[j])
+    EpredY_i_j <- dplyr::filter(EpredY_i_j,  EpredY_i_j[[taxon_j]] != 0)
+    
+    EpredY_i_j$decile <- ntile(EpredY_i_j[j], 10)
+    
+    decile_1 <- dplyr::filter(EpredY_i_j, decile == 1)
+    decile_10 <- dplyr::filter(EpredY_i_j, decile == 10)
+    
+    w_mean_depth_j_1 <- weighted.mean(decile_1$depth, decile_1[, j])
+    w_mean_depth_j_10 <- weighted.mean(decile_10$depth, decile_10[, j])
+    
+    w_mean_Lat_j_1 <- weighted.mean(decile_1$Lat, decile_1[, j])
+    w_mean_Lat_j_10 <- weighted.mean(decile_10$Lat, decile_10[, j])
+    
+    w_mean_Lon_j_1 <- weighted.mean(decile_1$Lon, decile_1[, j])
+    w_mean_Lon_j_10 <- weighted.mean(decile_10$Lon, decile_10[, j])
+    
+    df_w_mean_j <- data.frame(Year = rep(year_i, 2),
+                              taxon = rep(taxon_j, 2),
+                              depth = c(w_mean_depth_j_1, w_mean_depth_j_10),
+                              Lat = c(w_mean_Lat_j_1, w_mean_Lat_j_10),
+                              Lon = c(w_mean_Lon_j_1, w_mean_Lon_j_10),
+                              geom = c("first_mean", "last_mean"))
+    
+    df_w_mean_i <- rbind(df_w_mean_i, df_w_mean_j)
+  }
+  
+  centroides_deciles <- rbind(centroides_deciles, df_w_mean_i)
+  
+  centroides_deciles <- na.omit(centroides_deciles)
+  start <- start + 1 
+}
+
+centroides_deciles <- pivot_longer(centroides_deciles, !c(Year, taxon, geom))
+ 
+
+write.csv(centroides_deciles, file = paste0(MFDir, "/centroides_deciles_time_series_traits_3.csv"), row.names = F)
+```
+
+## Plots
+```{r}
+centroides_deciles <- read.csv(paste0(MFDir, "/centroides_deciles_time_series_traits_3.csv"))
+
+centroides_deciles <- relocate(centroides_deciles, Year, .after = taxon)
+
+plot_names <- c('Amblyraja_radiata' = "Amblyraja radiata",
+                'Leucoraja_naevus' = "Leucoraja naevus",
+                'Mustelus_asterias' = "Mustelus asterias",
+                'Raja_brachyura' = "Raja brachyura",
+                'Raja_clavata' = "Raja clavata",
+                'Raja_montagui' = "Raja montagui",
+                'Scyliorhinus_canicula' = "Scyliorhinus canicula",
+                'Scyliorhinus_stellaris' = "Scyliorhinus stellaris",
+                "Squalus_acanthias" = 'Squalus acanthias')
+
+ggplot() +
+  geom_point(aes(x = Lon, y = Lat, col = Year), data = centroides_deciles) +
+  facet_wrap(taxon ~ ., scales = "free", labeller = as_labeller(plot_names)) +
+  theme_bw(15) +
+  theme(panel.grid = element_blank()) +
+  theme(legend.position = "bottom") +
+  labs(x = "Longitude", y = "Latitude") +
+  theme(plot.title = element_text(face = "italic")) +
+  scale_colour_viridis_c()
+```
+
+## Statistics
+
+### Sen's estimates
+```{r}
+centroides_deciles <- read.csv(paste0(MFDir, "/centroides_deciles_time_series_traits_3.csv"))
+
+centroides_deciles <- relocate(centroides_deciles, Year, .after = taxon)
+centroides_deciles <- pivot_wider(centroides_deciles, values_from = value, names_from = name)
+trend_stat <- data.frame(Sen = NA, pvalue = NA, taxon = NA, geo = NA)
+
+for (i in levels(as.factor(centroides$taxon))){
+  sp_i <- dplyr::filter(centroides, taxon == i)
+  
+  first <- dplyr::filter(sp_i, geom == "first_mean")
+  last <- dplyr::filter(sp_i, geom == "last_mean")
+  
+  try(test_lon_i <- sens.slope(first$Lon, conf.level = 0.95))
+  trend_i <- data.frame(Sen = test_lon_i$estimates, 
+                        pvalue = test_lon_i$p.value, 
+                        taxon = i, 
+                        geo = "first_lon")
+  try(test_lon_i <- sens.slope(last$Lon, conf.level = 0.95))
+  trend_i <- rbind(trend_i, 
+                   data.frame(Sen = test_lon_i$estimates, 
+                              pvalue = test_lon_i$p.value,
+                              taxon = i,
+                              geo = "last_lon"))
+                        
+  try(test_lat_i <- sens.slope(first$Lat, conf.level = 0.95))
+  trend_i <- rbind(trend_i, 
+                   data.frame(Sen = test_lat_i$estimates, 
+                              pvalue = test_lat_i$p.value,
+                              taxon = i,
+                              geo = "first_lat"))
+  try(test_lat_i <- sens.slope(last$Lat, conf.level = 0.95))
+  trend_i <- rbind(trend_i, 
+                   data.frame(Sen = test_lat_i$estimates, 
+                              pvalue = test_lat_i$p.value,
+                              taxon = i,
+                              geo = "last_lat"))
+  
+  try(test_depth_i <- sens.slope(first$depth, conf.level = 0.95))
+  trend_i <- rbind(trend_i, 
+                   data.frame(Sen = test_depth_i$estimates,
+                              pvalue = test_depth_i$p.value, 
+                              taxon = i, 
+                              geo = "first_depth"))
+  try(test_depth_i <- sens.slope(last$depth, conf.level = 0.95))
+  trend_i <- rbind(trend_i, 
+                   data.frame(Sen = test_depth_i$estimates,
+                              pvalue = test_depth_i$p.value, 
+                              taxon = i, 
+                              geo = "last_depth"))
+  
+  trend_stat <- rbind(trend_stat, trend_i)
+}
+
+trend_stat <- trend_stat[-1, ]
+write.csv(trend_stat, file = paste0(MFDir, "/centroides_deciles_time_series_stat_traits_3.csv"), row.names = F)
+
+trend_stat <- filter(trend_stat, pvalue < 0.05)
+trend_stat
+```
+
+
+# NICHE SHAPE
+
+## Function & data
+```{r}
+# Niche position functions
+# polynomial responses of HMSC beta parameters
+
+check_beta_trend <- function(LpredDeriv){
+  pn<-dim(LpredDeriv)[2]
+  response = matrix(NA,nrow = nrow(LpredDeriv),ncol = 1)
+  for (i in 1:nrow(LpredDeriv)){
+    if (LpredDeriv[i,1]>0 & LpredDeriv[i,pn]>0){   
+      # derivative is positive at both ends -> clear case 1
+      response[i] = 1 
+    } else if (LpredDeriv[i,1]<0 & LpredDeriv[i,pn]<0) {
+      # derivative is negative at both ends -> clear case 2
+      response[i] = 2
+    } else if (LpredDeriv[i,1]>0 & LpredDeriv[i,pn]<0) {
+      # derivative changes from postitive to negative -> have to check in more detail
+      
+      if (sum(LpredDeriv[i,]>0)/pn<0.2){
+        # derivative is positive over less than 20% of the x-gradient extent -> classify as case 2
+        response[i] = 2
+        
+      } else if (sum(LpredDeriv[i,]>0)/pn>0.8){
+        # derivative is positive over more than 80% of the x-gradient extent -> classify as case 1
+        response[i] = 1
+        
+      } else {
+        # derivative is postive or negative only over at most 60% of the x-gradient extent -> classify as case 3
+        response[i] = 3
+      }
+      
+    } else if (LpredDeriv[i,1]<0 & LpredDeriv[i,pn]>0) {
+      # derivative changes from negative to positive -> have to check in more detail
+      
+      if (sum(LpredDeriv[i,]<0)/pn<0.2){
+        # derivative is negative over less than 20% of the x-gradient extent -> classify as case 1
+        response[i] = 1
+        
+      } else if (sum(LpredDeriv[i,]<0)/pn>0.8){
+        # derivative is negative over more than 80% of the x-gradient extent -> classify as case 2
+        response[i] = 2
+        
+      } else {response[i] = 3 
+      # derivative is positive or negative only over at most 60% of the x-gradient extent 
+      
+      }
+    }
+    
+  }
+  # calculate the probabilities for the cases
+  Pr1 = sum(response==1,na.rm=T)/length(response) #positive; derivative is positive over more than 90%
+  Pr2 = sum(response==2,na.rm=T)/length(response) #negative, derivative is negative over more than 90%
+  Pr3 = sum(response==3,na.rm=T)/length(response) #change; derivative is positive or negative only over at most 60% 
+  
+  return(c(Pr1,Pr2,Pr3))}
+```
+```{r}
+load(paste0(ModelDir, "/pa_traits_phylo_probit_thin_3.RData"))
+envt <- read.csv(paste0(dataDir, "/hindcast/envt_hindcast_traits.csv"))
+envt <- dplyr::select(envt, Year, max_SST_summer, max_ph_summer)
+```
+
+## Calcul
+```{r}
+mpost <- convertToCodaObject(m)
+Beta <- as.matrix(mpost$Beta)
+XData <- m$XData
+XData <- merge(XData, envt)
+spn <- ncol(m$Y[])
+poly$taxon <- colnames(m$Y[])
+
+temp_pred <- as.vector(seq(min(XData$max_SST_summer), 
+                          max(XData$max_SST_summer), length = 100))
+ph_pred <- as.vector(seq(min(XData$max_ph_summer),
+                        max(XData$max_ph_summer),length = 100))
+
+for (sp in 0:(spn-1)){
+  sp1 <- Beta[, (sp * 9 + 1) : (sp * 9 + 9)]
+          
+  LpredDeriv <- sp1[, 4] + 2 * sp1[, 5] %*% t(temp_pred)
+  res_temp <- rbind(res_temp, check_beta_trend(LpredDeriv))
+          
+  LpredDeriv = sp1[, 6] + 2 * sp1[, 7] %*% t(ph_pred)
+  res_ph <- rbind(res_ph, check_beta_trend(LpredDeriv))
+          
+  colnames(res_temp) <- c('pos_res_temp','neg_res_temp','change_res_temp')
+  colnames(res_ph) <- c('pos_res_ph','neg_res_ph','change_res_ph')
+        
+  poly <- data.frame(res_temp, res_ph)
+}
+
+poly$taxon <- colnames(m$Y[])
+
+write.csv(poly, paste0(MFDir, "/poly_trend_stat_traits_3.csv"), row.names = F)
+```
+
+### 1997-2009
+```{r}
+SXData <- dplyr::filter(XData, Year < 2010)
+
+res_temp <- c()
+res_ph <- c()
+
+temp_pred <- as.vector(seq(min(SXData$max_SST_summer), 
+                          max(SXData$max_SST_summer), length = 100))
+ph_pred <- as.vector(seq(min(SXData$max_ph_summer),
+                        max(SXData$max_ph_summer),length = 100))
+
+for (sp in 0:(spn-1)){
+  sp1 <- Beta[, (sp * 9 + 1) : (sp * 9 + 9)]
+          
+  LpredDeriv <- sp1[, 4] + 2 * sp1[, 5] %*% t(temp_pred)
+  res_temp <- rbind(res_temp, check_beta_trend(LpredDeriv))
+          
+  LpredDeriv = sp1[, 6] + 2 * sp1[, 7] %*% t(ph_pred)
+  res_ph <- rbind(res_ph, check_beta_trend(LpredDeriv))
+          
+  colnames(res_temp) <- c('pos_res_temp','neg_res_temp','change_res_temp')
+  colnames(res_ph) <- c('pos_res_ph','neg_res_ph','change_res_ph')
+        
+  poly <- data.frame(res_temp, res_ph)
+}
+
+write.csv(poly, paste0(MFDir, "/poly_trend_stat_traits_3_1997_2009.csv"), row.names = F)
+```
+
+### 2010-2020
+```{r}
+EXData <- dplyr::filter(XData, Year >= 2010)
+
+res_temp <- c()
+res_ph <- c()
+
+temp_pred <- as.vector(seq(min(EXData$max_SST_summer), 
+                          max(EXData$max_SST_summer), length = 100))
+ph_pred <- as.vector(seq(min(EXData$max_ph_summer),
+                        max(EXData$max_ph_summer),length = 100))
+
+for (sp in 0:(spn-1)){
+  sp1 <- Beta[, (sp * 9 + 1) : (sp * 9 + 9)]
+          
+  LpredDeriv <- sp1[, 4] + 2 * sp1[, 5] %*% t(temp_pred)
+  res_temp <- rbind(res_temp, check_beta_trend(LpredDeriv))
+          
+  LpredDeriv = sp1[, 6] + 2 * sp1[, 7] %*% t(ph_pred)
+  res_ph <- rbind(res_ph, check_beta_trend(LpredDeriv))
+          
+  colnames(res_temp) <- c('pos_res_temp','neg_res_temp','change_res_temp')
+  colnames(res_ph) <- c('pos_res_ph','neg_res_ph','change_res_ph')
+        
+  poly <- data.frame(res_temp, res_ph)
+}
+
+write.csv(poly, paste0(MFDir, "/poly_trend_stat_traits_3_2010_2020.csv"), row.names = F)
+```
+
+## Plot
+```{r}
+area_stat <- read.csv(paste0(MFDir, "/weighted_area_trend_stat_traits_3.csv"))
+#poly_stat <- read.csv(paste0(MFDir, "/poly_trend_stat_traits_3.csv"))
+
+stat <- area_stat[, 3:4]
+colnames(stat) <- c("taxon", "area.size")
+```
+
+### Niche positioning
+
+#### 1997-2009
+```{r}
+poly_stat <- read.csv(paste0(MFDir, "/poly_trend_stat_traits_3_2010_2020.csv"))
+```
+```{r}
+poly_stat$pos_res_temp[poly_stat$pos_res_temp >= 0.8] <- "Increasing"
+poly_stat$neg_res_temp[poly_stat$neg_res_temp >= 0.8] <- "Decreasing"
+
+poly_stat$pos_res_ph[poly_stat$pos_res_ph >= 0.8] <- "Increasing"
+poly_stat$neg_res_ph[poly_stat$neg_res_ph >= 0.8] <- "Decreasing"
+
+poly_stat$change_res_ph[poly_stat$change_res_ph >= 0.8] <- "Bell-shaped"
+poly_stat$change_res_temp[poly_stat$change_res_temp >= 0.8] <- "Bell-shaped"
+
+poly_stat
+```
+
+With traits
+```{r}
+poly_stat <- data.frame(taxon = poly_stat$taxon, 
+                        temp = c("Bell-shaped", "Decreasing", "Bell-shaped", "Decreasing", "Bell-shaped", "Decreasing", "Decreasing", "Bell-shaped", "Decreasing"),
+                        ph = c("Bell-shaped", "Bell-shaped", "Bell-shaped", "Bell-shaped", "Bell-shaped", "Bell-shaped", "Bell-shaped", "Decreasing", "Bell-shaped"))
+
+stat <- merge(stat, poly_stat, by = "taxon")
+```
+
+```{r}
+cbPalette <- c("#0d2fb1", "#999999", "#E69F00", "#56B4E9", "#009E73", "#fff400", "#0085f2","#e85645", "#ff71fc")
+
+plot <- ggplot(data = stat, aes(axis1 = ph, axis2 = temp, axis3 = area.size)) +
+  geom_alluvium(aes(fill = taxon), alpha = 5/7) +
+  geom_stratum(fill = "white") + 
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  theme_bw(18) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title = element_blank())  +
+  theme (legend.title = element_blank()) +
+  theme(legend.position = "bottom") +
+  scale_x_discrete(limits= c("Species response\nto pH", "Species response\nto temperature", "Suitable habitat area")) +
+  scale_y_discrete(breaks = NULL)  +
+  scale_fill_manual(values = cbPalette,
+                    labels = c("A. radiata", "L. naevus", "M. asterias", "R. brachyura", "R. clavata", "R. montagui", "S. canicula", "S. stellaris", "S. acanthias")) +
+  theme(legend.text = element_text(face = "italic"))
+
+try(dev.off())  
+  png("./output/traits_phylo_3/species_responses_poly_traits_3.png", width = 600)
+    print(plot)
+    dev.off()
+```
+
+
+

@@ -1,0 +1,159 @@
+---
+title: "04_parameter_estimates"
+author: "Noemie Coulon"
+date: "28/02/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# LOADING PACKAGES & FUNCTIONS
+```{r}
+if(!require(tidyverse)){install.packages("tidyverse"); library(tidyverse)}
+if(!require(knitr)){install.packages("knitr"); library(knitr)}
+if(!require(Hmsc)){install.packages("Hmsc"); library(Hmsc)}
+if(!require(corrplot)){install.packages("corrplot"); library(corrplot)}
+```
+
+# SET DIRECTORIES
+```{r}
+localDir = "." 
+dataDir = file.path(localDir, "data") 
+ModelDir = file.path(localDir, "models") 
+MixingDir = file.path(localDir, "mixing")
+MFDir = file.path(localDir, "model_fit")
+```
+
+# LOAD MODEL
+```{r}
+load(paste0(ModelDir, "/pa_traits_phylo_probit_thin_3.RData"))
+
+#load(paste0(ModelDir, "/pa_traits_phylo_probit_thin_1.RData"))
+phyloTree <- ape::read.tree(file.path(dataDir, "cons_full_resolved_10K_tree.txt"))
+```
+
+
+# VARIANCE PARTITIONNING
+```{r}
+VP <- computeVariancePartitioning(hM = m)
+plotVariancePartitioning(hM = m, VP = VP, horiz = T, xpd = T)
+```
+```{r}
+try(dev.off())
+png(paste0("./output/traits_phylo_3/variance_partitioning.png"), height = 900, width = 1200)
+plotVariancePartitioning(hM = m, VP = VP, horiz = T)
+dev.off()
+write.csv(VP$vals, "./output/traits_phylo_3/variance_partitioning.csv", row.names = T)
+```
+```{r}
+VP <- data.frame(VP$vals)
+VP$covariate <- rownames(VP)
+VP <- pivot_longer(VP, cols = !covariate)
+colnames(VP) <- c("covariate", "taxon", "variance")
+VP$taxon <- as.factor(VP$taxon)
+VP$taxon <- factor(VP$taxon, levels = rev(levels(VP$taxon)))
+taxon <- levels(VP$taxon)
+taxon <- sub("_", " ", taxon)
+
+VP$covariate <- as.factor(VP$covariate)
+VP$covariate <- factor(VP$covariate, levels = c("AMO", 
+                                                "substrate_diversity", 
+                                                "slope",
+                                                "depth" , 
+                                                "Random: Gear",
+                                                "poly(max_ph_summer, degree = 2, raw = T)",
+                                                "Random: Quarter",
+                                                "poly(max_SST_summer, degree = 2, raw = T)"))
+```
+```{r}
+var <- ggplot() +
+  geom_col(data = VP, aes(y = taxon, x = variance, fill = covariate), width = .5) +
+  labs(x = "Variance proportion", fill = NULL, y = NULL) +
+  scale_y_discrete(labels = taxon) +
+  scale_fill_manual(labels = c("AMO (mean = 0.1)",
+                                 "Substrate diversity (mean = 3)",
+                                 "Slope (mean = 6.2)",
+                                 "Depth (mean = 9.1)",
+                                 "Random : Gear (mean = 9.7)",
+                                 "poly(max_ph_summer, degree = 2) (mean = 18.4)",
+                                 "Random: Quarter (mean = 24.8)",
+                                 "poly(max_SST_summer, degree = 2) (mean = 28.7)"), 
+                    values = rev(c("#ffd319", "#a0da39", "#ff901f", "#ff2975" , "#f222ff",  "#8c1eff", "#96613d" ,"#440154"))) + 
+  theme_bw(70) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.text.y = element_text(face = "italic")) 
+
+try(dev.off())  
+png(paste0("./output/traits_phylo_3/variance_partioning.png"), height = 1500, width = 3000)
+print(var)
+dev.off() 
+```
+
+
+
+# COVARIATES EFFECTS
+
+## Environment
+```{r}
+postBeta <- getPostEstimate(m, parName = "Beta")
+plotBeta(m, post = postBeta, param = "Support", plotTree = T, spNamesNumbers = c(TRUE, FALSE))
+VP$R2T$Beta
+```
+```{r}
+dev.off()
+png(paste0("./output/traits_phylo_3/covariates_effects.png"), height = 900, width = 1200)
+plotBeta(m, post = postBeta, param = "Support", plotTree = T, spNamesNumbers = c(TRUE, FALSE))
+dev.off()
+```
+```{r}
+head(m$X)
+```
+
+## Traits
+```{r}
+postGamma = getPostEstimate(m, parName="Beta") 
+plotGamma(m, post=postGamma, param="Support", trNamesNumbers=c(TRUE,TRUE))
+```
+```{r}
+dev.off()
+png(paste0("./output/traits_phylo_3/traits_effects.png"), height = 900, width = 1200)
+plotGamma(m, post=postGamma, param="Support", trNamesNumbers=c(TRUE,TRUE))
+dev.off()
+```
+```{r}
+VP <- computeVariancePartitioning(hM = m)
+VP$R2T$Y # Species traits explain 41% of the variation in species occurrence.
+```
+
+## Species association
+```{r}
+OmegaCor = computeAssociations(m)
+
+supportLevel = 0.95 
+
+for (r in 1:m$nr){ 
+  plotOrder = corrMatOrder(OmegaCor[[r]]$mean,order="AOE") 
+  toPlot = ((OmegaCor[[r]]$support>supportLevel) +      (OmegaCor[[r]]$support<(1-supportLevel))>0)*OmegaCor[[r]]$mean
+  par(xpd = T) 
+  colnames(toPlot) = rownames(toPlot) = gsub("_"," ", x = colnames(toPlot))
+  corrplot(toPlot[plotOrder,plotOrder], method = "color", col = colorRampPalette(c("blue", "white", "red"))(200), title="", type="lower", tl.col = "black", tl.cex = .7, mar = c(0,0,6,0))
+}
+```
+
+## Phylogeny
+```{r}
+mpost <- convertToCodaObject(m)
+round(summary(mpost$Rho, quantiles = c(0.025, 0.5, 0.975)) [[2]],2)
+```
+
+# PARAMETER ESTIMATES (NUMERICALLY)
+```{r}
+mpost = convertToCodaObject(m)
+print(summary(mpost$Rho))
+summary(mpost$Alpha[[1]])
+```
+

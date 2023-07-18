@@ -1,0 +1,353 @@
+---
+title: "00b_datapreparation_envt"
+author: "Noemie Coulon"
+date: "09/02/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+if(!require(vegan)){install.packages("vegan"); library(vegan)}
+if(!require(tidyverse)){install.packages("tidyverse"); library(tidyverse)}
+if(!require(scales)){install.packages("scales"); library(scales)}
+if(!require(raster)){install.packages("raster"); library(raster)}
+if(!require(virtualspecies)){install.packages("virtualspecies"); library(virtualspecies)}
+if(!require(rnaturalearth)){install.packages("rnaturalearth"); library(rnaturalearth)}
+if(!require(ggthemes)){install.packages("ggthemes"); library(ggthemes)}
+if(!require(rgeos)){install.packages("rgeos"); library(rgeos)}
+
+source("http://www.sthda.com/upload/rquery_cormat.r")
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+initial_wd <- "D:/Thèse/2021-2022/R/IV-MODEL/"
+setwd(initial_wd)
+```
+
+# SET DIRECTORIES
+```{r}
+localDir = "." 
+dataDir = file.path(localDir, "data") 
+ModelDir = file.path(localDir, "models") 
+MixingDir = file.path(localDir, "mixing")
+MFDir = file.path(localDir, "model_fit")
+```
+
+# LOADING DATA
+```{r}
+setwd("./data/grid/")
+baseline <- raster("./baseline.grd")
+
+all_files <- list.files()
+raster_files <- all_files[grep("_raster", all_files)]
+raster_files <- raster_files[grep(".grd", raster_files)]
+
+envt <- stack()
+
+for (i in 1:length(raster_files)){
+  envt_i <- stack(paste0("./", raster_files[i]))
+  envt <- stack(envt, envt_i)
+}
+```
+
+# CROP
+```{r}
+envt <- crop(envt, baseline)
+```
+
+# NA SYNCHRONISATION
+```{r}
+envt <- synchroniseNA(envt)
+```
+
+# COLINEARITY
+
+## Mean values
+```{r}
+ph_mean <- stack(envt[[grep("ph_mean", names(envt))]])
+ph_mean <- mean(ph_mean)
+names(ph_mean) <- "ph_mean"
+
+SST_mean <- stack(envt[[grep("SST_mean", names(envt))]])
+SST_mean <- mean(SST_mean)
+names(SST_mean) <- "SST_mean"
+
+ph_summer <- stack(envt[[grep("max_ph_summer", names(envt))]])
+ph_summer <- mean(ph_summer)
+names(ph_summer) <- "ph_summer"
+
+ph_winter <- stack(envt[[grep("ph_winter", names(envt))]])
+ph_winter <- mean(ph_winter)
+names(ph_winter) <- "ph_winter"
+
+SST_summer <- stack(envt[[grep("SST_summer", names(envt))]])
+SST_summer <- mean(SST_summer)
+names(SST_summer) <- "SST_summer"
+
+SST_winter <- stack(envt[[grep("SST_winter", names(envt))]])
+SST_winter <- mean(SST_winter)
+names(SST_winter) <- "SST_winter"
+
+season_SST <- stack(envt[[grep("season_SST", names(envt))]])
+season_SST <- mean(season_SST)
+names(season_SST) <- "season_SST"
+
+season_ph <- stack(envt[[grep("season_ph", names(envt))]])
+season_ph <- mean(season_ph)
+names(season_ph) <- "season_ph"
+
+SBT_summer <- stack(envt[[grep("SBT_summer", names(envt))]])
+SBT_summer <- mean(SBT_summer)
+names(SBT_summer) <- "SBT_summer"
+
+SBT_winter <- stack(envt[[grep("SBT_winter", names(envt))]])
+SBT_winter <- mean(SBT_winter)
+names(SBT_winter) <- "SBT_winter"
+
+sub <- stack(ph_mean, SST_mean, ph_summer, ph_winter, SST_summer, SST_winter, season_SST, season_ph, SBT_summer, SBT_winter,
+             envt[["slope"]],
+             envt[["ldist"]],
+             envt[["depth"]])
+```
+
+## Correct colinearity
+```{r}
+groups <- removeCollinearity(sub, plot = T, 
+                             multicollinearity.cutoff = 0.85,
+                             method = "spearman")
+sel.groups <- groups[which(sapply(groups, length) > 1)]
+```
+
+
+
+
+
+```{r}
+envt <- stack(envt[[grep("SST_summer", names(envt))]],
+              envt[[grep("max_ph_summer", names(envt))]],
+              envt[["depth"]],
+              envt[["slope"]])
+writeRaster(envt, "./envt_var_selected", overwrite = T)
+```
+
+### Envt + traits
+```{r}
+envt <- stack(envt[[grep("SST_summer", names(envt))]],
+              envt[[grep("max_ph_summer", names(envt))]],
+              envt[["depth"]],
+              envt[["slope"]])
+writeRaster(envt, "./envt_var_selected_traits", overwrite = T)
+```
+
+
+
+# REMAKE A DATAFRAME
+```{r}
+envt <- stack("./envt_var_selected.grd")
+
+ts <- seq(1997, 2020)
+envt_var <- c("depth","slope", "max_SST_summer","max_ph_summer")
+envt_df <- data.frame(Lon = NA, 
+                      Lat = NA, 
+                      Year = NA,
+                      depth = NA,    
+                      slope = NA,
+                      max_SST_summer = NA,
+                      max_ph_summer = NA
+                      )
+
+for (i in 1:length(ts)){
+  ts_i <- ts[i]
+  phy_i <- merge(as.data.frame(envt[["depth"]], xy = T, na.rm = T),
+                 as.data.frame(envt[["slope"]], xy = T, na.rm = T))
+                 
+  var_i <- merge(phy_i, as.data.frame(envt[[grep(ts_i, names(envt))]], xy = T, na.rm = T))
+  colnames(var_i) <- c("Lon", "Lat", envt_var)
+  var_i$Year <- ts_i
+  var_i <- relocate(var_i, Year, .after = Lat)
+  envt_df <- rbind(envt_df, var_i)
+  
+}
+
+envt_df <- envt_df[-1,]
+
+setwd(initial_wd)
+write.csv(envt_df, "./data/envt_var_selected_df.csv", row.names = F)
+```
+
+# ADD AMO
+```{r}
+setwd(initial_wd)
+envt_df <- read.csv("./data/envt_var_selected_df.csv")
+amo <- read_csv("./data/amo.csv")
+amo <- dplyr::select(amo, year, mean)
+colnames(amo) <- c("Year", "AMO")
+envt_df <- merge(envt_df, amo, by = "Year")
+```
+# ADD SUBSTRATE
+```{r}
+setwd(initial_wd)
+substrate <- read.table("./data/substrate_reclassified_parameter.txt")
+#substrate <- read.table("./data/substrate.txt")
+substrate <- dplyr::select(substrate, Lon, Lat, main_substrate, Shannon)
+colnames(substrate) <- c("Lon", "Lat", "substrate", "substrate_diversity")
+substrate <- na.omit(substrate)
+```
+```{r}
+substrate$Lon <- round(substrate$Lon, digits = 5)
+substrate$Lat <- round(substrate$Lat, digits = 5)
+substrate <- unite(substrate, col = id, Lon, Lat, remove = F)
+```
+```{r}
+envt_df$Lon <- round(envt_df$Lon, digits = 5)
+envt_df$Lat <- round(envt_df$Lat, digits = 5)
+envt_df <- unite(envt_df, col = id, Lon, Lat, remove = F)
+```
+```{r}
+substrate <- dplyr::filter(substrate, id %in% envt_df$id)
+attach(substrate)
+substrate <- substrate[order(id),]
+detach(substrate)
+```
+```{r}
+envt_df <- merge(envt_df, substrate)
+envt_df$depth <- abs(envt_df$depth)
+```
+
+# CORRELATION PLOT
+```{r}
+mat <- cor(dplyr::select(envt_df, -id, -Year, -Lon, -Lat, -substrate))
+#mat <- cor(dplyr::select(envt_df, -Year, -Lon, -Lat, -min_SST_winter, -ph_mean, -min_ph_winter))
+rquery.cormat(mat)
+```
+
+## Save
+```{r}
+write.csv(envt_df, "./data/envt_var_selected_df.csv", row.names = F)
+```
+
+# MAPS
+
+```{r}
+grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
+grid <- grid[, -1]
+
+mean <- data.frame(id = levels(as.factor(grid$id)))
+```
+```{r}
+for (i in 5:ncol(grid)){
+  grid_i <- cbind(grid[, 1:4], mean = grid[, i])
+  
+  mean_i <- stats::aggregate(mean ~ id, data = grid_i, FUN = "mean")
+  colnames(mean_i)[2] <- colnames(grid[i])
+  
+  mean <- mutate(mean, mean_i)
+}
+
+mean <- separate(mean, id, c("Lon", "Lat"), remove = F, sep = "_")
+mean$Lon <- as.numeric(mean$Lon)
+mean$Lat <- as.numeric(mean$Lat)
+```
+
+## Slope
+```{r}
+slope <- ggplot(world) + 
+  geom_tile(data = mean, aes(x = Lon, y = Lat, fill = slope)) +
+  geom_sf(data = world, fill = alpha("lightgrey", 1)) +
+  coord_sf(xlim = c(min(grid$Lon), max(grid$Lon)), 
+           ylim = c(min(grid$Lat), max(grid$Lat)))+
+  theme_bw(150) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title = element_blank()) +
+  scale_fill_gradientn(colors = c("#440154FF","#39568CFF","#1F968BFF","#73D055FF","#FDE725FF"))+
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  guides(fill = guide_colourbar(barwidth = 90,
+                                barheight = 2))
+try(dev.off())
+png("./output/context/environmental_variables/slope.png", width = 2100, height = 3000)
+print(slope)
+dev.off()
+```
+
+## Depth
+```{r}
+depth <- ggplot(world) + 
+  geom_tile(data = mean, aes(x = Lon, y = Lat, fill = depth)) +
+  geom_sf(data = world, fill = alpha("lightgrey", 1)) +
+  coord_sf(xlim = c(min(grid$Lon), max(grid$Lon)), 
+           ylim = c(min(grid$Lat), max(grid$Lat)))+
+  theme_bw(150) +
+  theme(panel.grid = element_blank()) + 
+  theme(axis.title = element_blank()) +
+  scale_fill_gradientn(colors = c("#FDE725FF","#73D055FF","#1F968BFF", "#39568CFF","#440154FF"))+
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  guides(fill = guide_colourbar(barwidth = 90,
+                                barheight = 2))
+try(dev.off())
+png("./output/context/environmental_variables/depth.png", width = 2100, height = 3000)
+print(depth)
+dev.off()
+```
+
+
+## SST summer
+```{r}
+SST <- ggplot(world) + 
+  geom_tile(data = mean, aes(x = Lon, y = Lat, fill = max_SST_summer)) +
+  geom_sf(data = world, fill = alpha("lightgrey", 1)) +
+  coord_sf(xlim = c(min(grid$Lon), max(grid$Lon)), 
+           ylim = c(min(grid$Lat), max(grid$Lat)))+
+  theme_bw(150) +
+  theme(panel.grid = element_blank()) + 
+  theme(axis.title = element_blank()) +
+  scale_fill_gradientn(colors = c("#440154FF","#39568CFF","#1F968BFF","#73D055FF","#FDE725FF"))+
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  guides(fill = guide_colourbar(barwidth = 90,
+                                barheight = 2))
+try(dev.off())
+png("./output/context/environmental_variables/max_SST_summer.png", width = 2100, height = 3000)
+print(SST)
+dev.off()
+```
+
+## ph summer
+```{r}
+pH <- ggplot(world) + 
+  geom_tile(data = mean, aes(x = Lon, y = Lat, fill = max_ph_summer)) +
+  geom_sf(data = world, fill = alpha("lightgrey", 1)) +
+  coord_sf(xlim = c(min(grid$Lon), max(grid$Lon)), 
+           ylim = c(min(grid$Lat), max(grid$Lat)))+
+  theme_bw(150) +
+  theme(panel.grid = element_blank()) + 
+  theme(axis.title = element_blank()) +
+  scale_fill_gradientn(colors = c("#440154FF","#39568CFF","#1F968BFF","#73D055FF","#FDE725FF"))+
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  guides(fill = guide_colourbar(barwidth = 90,
+                                barheight = 2))
+try(dev.off())
+png("./output/context/environmental_variables/max_pH_summer.png", width = 2100, height = 3000)
+print(pH)
+dev.off()
+```
+
+## substrate diversity
+```{r}
+substrate <- ggplot(world) + 
+  geom_tile(data = mean, aes(x = Lon, y = Lat, fill = substrate_diversity)) +
+  geom_sf(data = world, fill = alpha("lightgrey", 1)) +
+  coord_sf(xlim = c(min(grid$Lon), max(grid$Lon)), 
+           ylim = c(min(grid$Lat), max(grid$Lat)))+
+  theme_bw(150) +
+  theme(panel.grid = element_blank()) + 
+  theme(axis.title = element_blank()) +
+  scale_fill_gradientn(colors = c("#440154FF","#39568CFF","#1F968BFF","#73D055FF","#FDE725FF"))+
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  guides(fill = guide_colourbar(barwidth = 90,
+                                barheight = 2))
+try(dev.off())
+png("./output/context/environmental_variables/substrate_diversity.png", width = 2100, height = 3000)
+print(substrate)
+dev.off()
+```
+

@@ -1,0 +1,365 @@
+---
+title: "01_model_pa_envt"
+author: "Noemie Coulon"
+date: "09/02/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# LOADING PACKAGES & FUNCTIONS
+```{r}
+if(!require(tidyverse)){install.packages("tidyverse"); library(tidyverse)}
+if(!require(knitr)){install.packages("knitr"); library(knitr)}
+if(!require(Hmsc)){install.packages("Hmsc"); library(Hmsc)}
+```
+
+# SET DIRECTORIES
+```{r}
+localDir = "." 
+dataDir = file.path(localDir, "data") 
+ModelDir = file.path(localDir, "models") 
+MixingDir = file.path(localDir, "mixing")
+MFDir = file.path(localDir, "model_fit")
+```
+
+# LOADING DATA
+
+## Presence-absence data
+```{r}
+data<- read.csv("./data/pa_grid_new.csv", header = T)
+data$Lon <- round(data$Lon, digits = 5)
+data$Lat <- round(data$Lat, digits = 5)
+data <- unite(data, col = id, Lon, Lat, Year, remove = F)
+```
+
+## Environmental data
+```{r}
+envt <- read.csv("./data/envt_var_selected_df.csv", header = T)
+envt$Lon <- round(envt$Lon, digits = 5)
+envt$Lat <- round(envt$Lat, digits = 5)
+envt <- unite(envt, col = id, Lon, Lat, Year, remove = F)
+```
+
+# FILTER DATA
+
+## Environmental information for presence-abscence data
+```{r}
+envt <- dplyr::filter(envt, id %in% data$id)
+attach(envt)
+envt <- envt[order(id),]
+detach(envt)
+
+envt <- na.omit(envt)
+```
+
+## Presence-absence data for which environmental information is available
+```{r}
+data <- dplyr::filter(data, id %in% envt$id)
+attach(data)
+data <- data[order(id),]
+detach(data)
+```
+
+## Possibility of refining?
+
+### Quarters
+```{r}
+ggplot(aes(x = Lon, y = Lat), data = data) +
+  geom_point(aes(col = Quarter)) +
+  theme_bw()+
+  theme(panel.grid = element_blank())
+```
+
+### Depth
+```{r}
+prop_500 <- 1- nrow(dplyr::filter(envt, depth < 500))/nrow(envt)
+prop_200 <- 1- nrow(dplyr::filter(envt, depth < 200))/nrow(envt)
+
+envt <- dplyr::filter(envt, depth < 200)
+data <- dplyr::filter(data, id %in% envt$id)
+```
+
+# SAVE HINDCAST 
+
+## Zero inflation
+```{r}
+zero.inflation <- function(data){
+  zero_inflation <- sum(apply(data[, 7:ncol(data)], 2, function(x) length(x[x == 0]))) / (nrow(data) * ncol(data[, 7:ncol(data)])) * 100
+  cat(paste("---- There is", round(zero_inflation), "% of absence ----" ))
+  return(zero_inflation)
+}
+zero.inflation.sp <- function(data){
+  zero_inflation_sp <- data.frame(pa=(apply(data[, 7:ncol(data)], 2, function(x) length(x[x == 1])) / nrow(data)) * 100)
+  zero_inflation_sp$taxon <- rownames(zero_inflation_sp)
+  for(i in 1:nrow(zero_inflation_sp)){
+    cat(paste("----", zero_inflation_sp$taxon[i]), "is present in", zero_inflation_sp$pa[i], "% of the hauls ---- \n")
+  }
+  return(zero_inflation_sp)
+}
+
+zero_inflation <- zero.inflation(data)
+zero_inflation_sp <- zero.inflation.sp(data)
+
+write.csv(data, paste0(dataDir, "/hindcast/pa_hindcast_last.csv"), row.names = F)
+write.csv(envt, paste0(dataDir, "/hindcast/envt_hindcast.csv"), row.names = F)
+```
+
+# DATA MATRICES
+
+## Species data
+```{r}
+Y <- as.matrix(data[, 7:ncol(data)])
+```
+
+## Environmental covariates 
+```{r}
+envt$depth <- abs(envt$depth)
+envt <- dplyr::select(envt, -substrate)
+XData <- envt[, 5:ncol(envt)]
+```
+
+# MODEL CONTEXT
+
+## Study design
+```{r}
+studyDesign <- matrix(NA, nrow(Y), 3)
+studyDesign[, 1] <- sprintf("Quarter_%s", data$Quarter)
+studyDesign[, 2] <- sprintf("Gear_%s", data$Gear)
+studyDesign[, 3] <- sprintf('Year_%.3d', data$Year)
+studyDesign <- as.data.frame(studyDesign)
+colnames(studyDesign) <- c("Quarter", "Gear", "Year")
+studyDesign[, 1] <- as.factor(studyDesign[, 1])
+studyDesign[, 2] <- as.factor(studyDesign[, 2])
+studyDesign[, 3] <- as.factor(studyDesign[, 3])
+```
+
+## Spatially structured variables
+
+### Quarters
+```{r}
+quarters <- levels(studyDesign[, 1])
+nquarters <- length(quarters)
+xy <- matrix(0, nrow = nquarters, ncol = 2)
+
+for (i in 1:nquarters) {
+  rows <- studyDesign[, 1] == quarters[[i]]
+  xy[i, 1] <- mean(data[rows, ]$Lon)
+  xy[i, 2] <- mean(data[rows, ]$Lat)
+}
+colnames(xy) <- c("Lon", "Lat")
+
+sRLq <- xy
+rownames(sRLq) <- quarters
+rLq <- HmscRandomLevel(sData = sRLq)
+rLq$nfMin <- 5
+rLq$nfMax <- 10
+```
+
+### Gears
+```{r}
+gears <- levels(studyDesign[, 2])
+ngears <- length(gears)
+xy <- matrix(0, nrow = ngears, ncol = 2)
+
+for (i in 1:ngears) {
+  rows <- studyDesign[, 2] == gears[[i]]
+  xy[i, 1] <- mean(data[rows, ]$Lon)
+  xy[i, 2] <- mean(data[rows, ]$Lat)
+}
+colnames(xy) <- c("Lon", "Lat")
+
+sRLg <- xy
+rownames(sRLg) <- gears
+rLg <- HmscRandomLevel(sData = sRLg)
+rLg$nfMin <- 5
+rLg$nfMax <- 10
+```
+
+# INVESTIGATE PRESENCE ~ ENVIRONMENTAL VARIABLES
+
+```{r}
+invest <- merge(data, envt)
+```
+
+## Depth
+```{r}
+ggplot() +
+  geom_bar(aes(x = round(depth)), data = invest,
+           stat = "count")
+```
+
+## slope
+```{r}
+ggplot() +
+  geom_bar(aes(x = round(slope, digits = 2)), data = invest,
+           stat = "count")
+```
+
+## max_SST_summer
+```{r}
+ggplot() +
+  theme_bw(30)  +
+  theme(panel.grid = element_blank()) +
+  xlab("max SST summer (°C)") + 
+  ylab("Count") +
+  geom_bar(aes(x = round(max_SST_summer, digits = 1)), data = invest,
+           stat = "count")
+```
+
+## max_ph_summer
+```{r}
+ggplot() +
+  theme_bw(30)  +
+  theme(panel.grid = element_blank()) +
+  xlab("max pH summer") + 
+  ylab("Count") +
+  geom_bar(aes(x = round(max_ph_summer, digits = 2)), data = invest,
+           stat = "count")
+```
+
+## substrate_diversity
+```{r}
+ggplot() + 
+  geom_bar(aes(x = round(substrate_diversity)), data = invest,
+           stat = "count")
+```
+
+# MODEL
+
+## Formula
+
+As default, scaling is applied for X and Tr matrices and the estimated parameters are back-transformed so that the estimated parameters correspond to the original X and Tr matrices
+
+```{r}
+Xformula = ~ depth + slope + max_SST_summer + max_ph_summer + substrate_diversity + AMO
+
+Xformula = ~ depth +
+             slope +
+             poly(max_SST_summer, degree = 2, raw = T) +
+             poly(max_ph_summer, degree = 2, raw = T) +
+             substrate_diversity +
+             AMO
+```
+
+```{r}
+mod <- Hmsc(Y=Y,
+          XData=XData, XFormula= Xformula,
+          distr = "probit", 
+          studyDesign = studyDesign, ranLevels = list(Quarter = rLq, Gear = rLg))
+```
+
+## Run MCMC
+
+The MCMC sampling scheme can be controlled by adjusting the desired number of posterior samples, the thinning interval (number of steps of the MCMC chain between each sample), the length of the transient to
+be cut from the chain before sampling, and the number of chains.
+
+Default priors : We sampled the posterior distribution with four MCMC chains, each of which were run for 150,000 iterations, out of which the first 50,000 were removed as burn-in and the remaining ones were thinned by 100 to yield 1000 posterior samples per chain, and thus 4000
+posterior samples in total.
+
+```{r}
+thin<-50 # the number of MCMC steps between each recording of samples from the posterior
+samples<-1000 # the number of MCMC samples to be obtained in each chain
+nChains<-2 # number of independent MCMC chains to be run
+adaptNf <- rep(ceiling(0.4*samples*thin),1) # a vector of length n_r with number of MCMC steps at which the adaptation of the number of latent factors is conducted
+transient <- 500*thin  # the number of MCMC steps that are executed before starting recording posterior samples 
+verbose<-500*thin
+set.seed(1)
+ptm = proc.time() 
+```
+
+```{r}
+m = Hmsc::sampleMcmc(hM = mod, samples = samples, 
+               thin = thin,
+               transient =transient,
+               nChains = nChains,
+               verbose=verbose,
+               initPar = "fixed effects")
+
+computational.time = proc.time() - ptm
+
+filename = file.path(ModelDir, paste("model_pa_probit_thin_", ... = as.character(thin), "_samples_", as.character(samples), ".Rdata", sep = ""))
+
+save(m, file=filename, computational.time)
+```
+
+# MODEL CORRECTION
+
+
+Le modèle ne capture pas du tout la présence d'A. radiata.
+On essaye 2 approches :
+1- faire un modèle avec que A. radiata afin de savoir si les variables environnementales sont relevantes pour cette espèce
+2 - faire un modèle sans A. radiata afin de savoir si l'erreur se répète ailleurs ou non
+
+A. radiata is the 11th columns of data
+
+## Only with A. radiata
+```{r}
+Y_only <- as.matrix(data[, 11])
+```
+```{r}
+mod <- Hmsc(Y=Y_only,
+          XData=XData, XFormula= Xformula,
+          distr = "probit", 
+          studyDesign = studyDesign, ranLevels = list(Quarter = rLq, Gear = rLg))
+```
+```{r}
+m = Hmsc::sampleMcmc(hM = mod, samples = samples, 
+               thin = thin,
+               transient =transient,
+               nChains = nChains,
+               verbose=verbose,
+               initPar = "fixed effects")
+
+computational.time = proc.time() - ptm
+
+filename = file.path(ModelDir, paste("model_pa_probit_thin_", ... = as.character(thin), "_samples_", as.character(samples), "_A_radiatat_only.Rdata", sep = ""))
+
+save(m, file=filename, computational.time)
+```
+
+## Without A. radiata
+```{r}
+Y_without <- as.matrix(cbind(data[, 7:10], data[, 12:ncol(data)]))
+```
+```{r}
+mod <- Hmsc(Y = Y_without,
+          XData=XData, XFormula= Xformula,
+          distr = "probit", 
+          studyDesign = studyDesign, ranLevels = list(Quarter = rLq, Gear = rLg))
+```
+```{r}
+m = Hmsc::sampleMcmc(hM = mod, samples = samples, 
+               thin = thin,
+               transient =transient,
+               nChains = nChains,
+               verbose=verbose,
+               initPar = "fixed effects")
+
+computational.time = proc.time() - ptm
+
+filename = file.path(ModelDir, paste("model_pa_probit_thin_", ... = as.character(thin), "_samples_", as.character(samples), "_7.Rdata", sep = ""))
+
+save(m, file=filename, computational.time)
+```
+
+## GAM
+```{r}
+gam_df <- merge(data, envt)
+
+slope + depth + max_SST_summer + min_SST_winter + min_ph_summer + min_SBT_winter + AMO + substrate + substrate_diversity
+
+gam_mod <- mgcv::gam(Amblyraja_radiata ~ s(slope) + 
+                       s(depth) +
+                       s(max_SST_summer) +
+                       s(min_SST_winter) + 
+                       s(min_ph_summer) +
+                       s(min_SBT_winter) +
+                       s(AMO)+
+                       substrate + 
+                       s(substrate_diversity), data = gam_df, family = "binomial")
+coef(gam_mod)
+
+plot(gam_mod)
+```
+

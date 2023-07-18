@@ -1,0 +1,760 @@
+---
+title: "00datapreparation"
+author: "Noemie Coulon"
+date: "27/01/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# LOADING PACKAGES & FUNCTIONS
+
+```{r}
+if(!require(vegan)){install.packages("vegan"); library(vegan)}
+if(!require(tidyverse)){install.packages("tidyverse"); library(tidyverse)}
+if(!require(scales)){install.packages("scales"); library(scales)}
+if(!require(raster)){install.packages("raster"); library(raster)}
+if(!require(mapproj)){install.packages("mapproj"); library(mapproj)}
+if(!require(sf)){install.packages("sf"); library(sf)}
+if(!require(ggplot2)){install.packages("ggplot2"); library(ggplot2)}
+if(!require(rnaturalearth)){install.packages("rnaturalearth"); library(rnaturalearth)}
+if(!require(rnaturalearthdata)){install.packages("rnaturalearthdata"); library(rnaturalearthdata)}
+if(!require(ggthemes)){install.packages("ggthemes"); library(ggthemes)}
+if(!require(rgeos)){install.packages("rgeos"); library(rgeos)}
+
+initial_wd <- "C:/Users/ncoulon/Desktop/Thèse/2021-2022/R/IV-MODEL/"
+world <- ne_countries(scale = "medium", returnclass = "sf")
+```
+
+# SET DIRECTORIES
+```{r}
+localDir = "." 
+dataDir = file.path(localDir, "data") 
+ModelDir = file.path(localDir, "models") 
+MixingDir = file.path(localDir, "mixing")
+MFDir = file.path(localDir, "model_fit")
+```
+
+# PREPARE PA DATA
+## Loading data
+
+```{r}
+ab <- read.csv("data/raw/abundance.csv", header = T)
+ab_pa <- cbind(ab[, 1:12], decostand(ab[, 13:27], method = "pa"))
+
+zero.inflation <- function(ab_pa){
+  zero_inflation <- sum(apply(ab_pa[, 13:ncol(ab_pa)], 2, function(x) length(x[x == 0]))) / (nrow(ab_pa) * ncol(ab_pa[, 13:ncol(ab_pa)])) * 100
+  cat(paste("---- There is", round(zero_inflation), "% of absence ----" ))
+  return(zero_inflation)
+}
+
+zero_inflation <- zero.inflation(ab_pa)
+```
+
+## Zero inflation per species
+
+```{r}
+zero.inflation.sp <- function(ab_pa){
+  zero_inflation_sp <- data.frame(pa=(apply(ab_pa[, 13:ncol(ab_pa)], 2, function(x) length(x[x == 1])) / nrow(ab_pa)) * 100)
+  zero_inflation_sp$taxon <- rownames(zero_inflation_sp)
+  for(i in 1:nrow(zero_inflation_sp)){
+    cat(paste("----", zero_inflation_sp$taxon[i]), "is present in", zero_inflation_sp$pa[i], "% of the hauls ---- \n")
+  }
+  return(zero_inflation_sp)
+}
+
+zero_inflation_sp <- zero.inflation.sp(ab_pa)
+
+tmp<-dplyr::filter(zero_inflation_sp, pa < 2)
+cat(paste("----", nrow(tmp), "species is/are not enough sampled and removed ----"))
+rm(tmp)
+```
+
+Species present in less than 2% of the total hauls are removed
+
+```{r}
+zero_inflation_sp <- dplyr::filter(zero_inflation_sp, pa >= 2)
+
+ab_pa <- cbind(ab_pa[, 1:12],
+               ab_pa[, all_of(zero_inflation_sp$taxon)])
+
+zero_inflation <- zero.inflation(ab_pa)
+```
+
+## Gear used over time
+```{r}
+gears.ts <- function(ab_pa) {
+  gears_ts <- data.frame(Gear = NA, count = NA, percent = NA, Year = NA)
+  for (i in levels(as.factor(ab_pa$Year))) {
+    year_i <- dplyr::filter(ab_pa, Year == i)
+    prop.gears_i <- data.frame(fct_count(year_i$Gear))
+    colnames(prop.gears_i) <- c("Gear", "count")
+    prop.gears_i$percent <- (prop.gears_i$count / sum(prop.gears_i$count)) * 100
+    prop.gears_i$Year <- levels(as.factor(year_i$Year))
+    gears_ts <- rbind(gears_ts, prop.gears_i)
+  }
+  gears_ts <- gears_ts[-1, ]
+  return(gears_ts)
+}
+gear_ts <- gears.ts(ab_pa)
+```
+```{r}
+dev.off()
+p <- ggplot(aes(x = as.factor(Year), y = percent, fill = Gear), data = gear_ts) +
+  geom_col() +
+  scale_fill_manual(values = c("#6accc5", "#b85e12", "#bdea5a", "#625e49", "#9e1e4a", "#5d346c", "#d8b300", "#5eb963", "#d4994a", "#5585cf","#f8766d", "#00c19f")) +
+  labs(x = "Years", y = "Proportion of gears used") +
+  theme_bw(50) +
+  theme(panel.grid = element_blank())+
+  theme(axis.text.x = element_text(angle = 90))
+png(paste0("./output/context/gears_ts.png"), height = 900, width = 1500)
+print(p)
+dev.off()
+```
+
+Only the gears used throughout the time series are kept.
+
+```{r}
+ts <- levels(as.factor(ab_pa$Year))
+gears_kept<-NA
+
+for (i in levels(as.factor(gear_ts$Gear))){
+  gear_i <- dplyr::filter(gear_ts,Gear==i)
+  gear_i <- dplyr::filter(gear_i, percent != 0)
+  if(nrow(gear_i) == length(ts)){
+    gears_kept <- c(gears_kept, levels(as.factor(gear_i$Gear)))
+  }
+}
+gears_kept <- gears_kept[-1]
+
+cat(paste("----", length(levels(as.factor(ab_pa$Gear)))-length(gears_kept), "hauls has been removed ----"))
+
+ab_pa <- dplyr::filter(ab_pa, Gear %in% gears_kept)
+
+gear_time <- gears.ts(ab_pa)
+
+
+zero_inflation <- zero.inflation(ab_pa)
+zero_inflation_sp <- zero.inflation.sp(ab_pa)
+```
+```{r}
+dev.off()
+p <- ggplot(aes(x = as.factor(Year), y = percent, fill = Gear), data = gear_time) +
+  geom_col() +
+  scale_fill_manual(values = c("#bdea5a", "#625e49", "#d4994a", "#5585cf")) +
+  labs(x = "Years", y = "Proportion of gears used") +
+  theme_bw(50) +
+  theme(panel.grid = element_blank())+
+  theme(axis.text.x = element_text(angle = 90))
+
+png(paste0("./output/context/gears_kept_ts.png"), height = 900, width = 1500)
+print(p)
+dev.off()
+```
+
+## Global gear selectivity
+
+```{r}
+tmp <- data.frame(Gear = ab_pa$Gear, HaulsID = ab_pa$HaulsID, pa = rowSums(ab_pa[, 13:ncol(ab_pa)]))
+gear_selectivity <- aggregate(pa ~ Gear, data = tmp, FUN = sum)
+gear_selectivity$percent <- (gear_selectivity$pa / sum(gear_selectivity$pa)) * 100
+gear_selectivity
+
+gears_removed<-NA
+
+for (i in 1:nrow(gear_selectivity)){
+  gear_i <- gear_selectivity$Gear[i]
+  if(gear_selectivity$percent[i] < 1){
+  ab_pa <- dplyr::filter(ab_pa, Gear != all_of(gear_i))  
+  gears_removed<-c(gears_removed,gear_i)
+  }
+}
+
+rm(tmp)
+cat(paste("----", length(gears_removed)-1, "hauls has been removed ----"))
+```
+
+## Gear selectivity per species
+```{r}
+gear.selectivity.sp<-function(ab_pa){
+  gear_selectivity<-data.frame(Gear=NA,pa=NA,taxon=NA)
+  for (i in (13:ncol(ab_pa))){
+    gear_selectivity_spi<-as.data.frame(aggregate(ab_pa[,i]~Gear,ab_pa,sum))
+    colnames(gear_selectivity_spi)<-c("Gear","pa")
+    gear_selectivity_spi$taxon<-colnames(ab_pa[i])
+    gear_selectivity<-rbind(gear_selectivity,gear_selectivity_spi)
+  }
+  gear_selectivity<-gear_selectivity[-1,]
+  return(gear_selectivity)
+}
+gear_selectivity_sp<-gear.selectivity.sp(ab_pa)
+```
+```{r}
+dev.off()
+p<-ggplot(aes(x=Gear,y=taxon,fill=log(pa)), data=gear_selectivity_sp)+
+  geom_tile()+
+  labs(x="Gears",y="Species") +
+  theme_bw(50)+
+  theme(panel.grid=element_blank()) +
+  scale_fill_continuous(type = "viridis")
+png(paste0("./output/context/gears_selectivity.png"), height = 900, width = 1500)
+print(p)
+dev.off()
+```
+
+
+## Continuous sampling of seasons through time
+```{r}
+quarter.ts <- function(ab_pa) {
+  ab_pa$Quarter<-as.factor(ab_pa$Quarter)
+  quarter_ts <- data.frame(Quarter = NA, count = NA, percent = NA, Year = NA)
+  for (i in levels(as.factor(ab_pa$Year))) {
+    year_i <- dplyr::filter(ab_pa, Year == i)
+    prop.quarter_i <- data.frame(fct_count(year_i$Quarter))
+    colnames(prop.quarter_i) <- c("Quarter", "count")
+    prop.quarter_i$percent <- (prop.quarter_i$count / sum(prop.quarter_i$count)) * 100
+    prop.quarter_i$Year <- levels(as.factor(year_i$Year))
+    quarter_ts <- rbind(quarter_ts, prop.quarter_i)
+  }
+  quarter_ts <- quarter_ts[-1, ]
+  return(quarter_ts)
+}
+quarter_ts <- quarter.ts(ab_pa)
+```
+```{r}
+dev.off()
+p <- ggplot(aes(x = as.factor(Year), y = percent, fill = Quarter), data = quarter_ts) +
+  geom_col() +
+  scale_fill_manual(values = c("#6accc5", "#b85e12", "#bdea5a", "#625e49")) +
+  labs(x = "Years", y = "Proportion of quarter sampled") +
+  theme_bw(50) +
+  theme(panel.grid = element_blank())+
+  theme(axis.text.x = element_text(angle = 90))
+png(paste0("./output/context/quarter_ts.png"), height = 900, width = 1500)
+print(p)
+dev.off()
+```
+
+Only the quarters sampled throughout the time series are kept.
+
+```{r}
+quarter_kept<-NA
+ts <- seq(1997, 2020)
+
+for (i in levels(as.factor(quarter_ts$Quarter))){
+  quarter_i <- dplyr::filter(quarter_ts, Quarter == i)
+  quarter_i <- dplyr::filter(quarter_i, percent != 0)
+  if(nrow(quarter_i) == length(ts)){
+    quarter_kept <- c(quarter_kept, levels(as.factor(quarter_i$Quarter)))
+  }
+}
+quarter_kept <- quarter_kept[-1]
+
+cat(paste("----", length(levels(as.factor(ab_pa$Quarter)))-length(quarter_kept), "quarters is/are not sampled throughout the time series and removed ----"))
+
+ab_pa <- dplyr::filter(ab_pa, Quarter %in% quarter_kept)
+
+quarter_ts <- quarter.ts(ab_pa)
+
+zero_inflation <- zero.inflation(ab_pa)
+zero_inflation_sp <- zero.inflation.sp(ab_pa)
+```
+```{r}
+dev.off()
+p <- ggplot(aes(x = as.factor(Year), y = percent, fill = Quarter), data = quarter_ts) +
+  geom_col() +
+  scale_fill_manual(values = c("#6accc5", "#bdea5a", "#625e49")) +
+  labs(x = "Years", y ="Proportion of quarter sampled") +
+  theme_bw(50) +
+  theme(panel.grid = element_blank())+
+  theme(axis.text.x = element_text(angle = 90))
+
+png(paste0("./output/context/quarters_kept_ts.png"), height = 900, width = 1500)
+print(p)
+dev.off()
+```
+
+## Gears used in space
+```{r}
+map_gears <- function(data){
+  gear_colab <- NULL
+  for(j in 1:nrow(data)){
+      if(data$Gear[j]=="BT4A"){
+        gear_colab <- c(gear_colab, "#bdea5a")
+      }else if(data$Gear[j]=="BT4AI"){
+        gear_colab <- c(gear_colab, "#625e49") 
+      }else if(data$Gear[j]=="BT8"){
+        gear_colab <- c(gear_colab, "#d4994a") 
+      }else if(data$Gear[j]=="GOV"){
+        gear_colab <- c(gear_colab,"#5585cf")
+      }
+    }
+    gear_col<-c("#bdea5a", "#625e49", "#d4994a","#5585cf")
+    maps::map(database = "world", ylim = c(min(data$Lat) - 7, max(data$Lat) + 2), xlim = c(min(data$Lon) - 10, max(data$Lon) + 10), fill = TRUE, col = "gray")
+plot(data$Lon, data$Lat, col = gear_colab, pch = 20, cex = 2, xlab = "Longitude", ylab = "Latitude", cex.lab = 3, cex.axis = 2)
+maps::map(database = "world", ylim = c(min(data$Lat) - 7, max(data$Lat) + 2), xlim = c(min(data$Lon) - 10, max(data$Lon) + 10), fill = TRUE, col = "gray", add = T)
+scalebar(d = 200, xy = c(min(data$Lon), min(data$Lat)), type = "bar", below = "km", lwd = 5, divs = 2, col = "black", cex = 2, lonlat = T)
+legend(max(data$Lon) - 4, max(data$Lat),
+  bg = "#FFFFFF",
+  legend = c("BT4A", "BT4AI", "BT8", "GOV"),
+  fill = gear_col, cex = 2, title = "Gears"
+)
+}
+
+dev.off()
+png(paste0("./output/context/gears_map.png"), height = 900, width = 1500)
+print(map_gears(ab_pa))
+dev.off()
+```
+
+## Save prepared pa data
+```{r}
+write.csv(ab_pa,"./data/pa.csv", row.names = F)
+rm(list=ls())
+```
+
+
+
+# SURVEY INVESTIGATION
+
+## Plot surveys
+```{r}
+pa <- read.csv("./data/pa.csv")
+levels(as.factor(pa$Survey))
+
+Rect_ICES_27 <- read_delim("data/IFR_F_RECTANGLE_CIEM.csv", ";", escape_double = FALSE, col_types = cols(SOUTH = col_number(), 
+                                                                                                   WEST = col_number(), NORTH = col_number(),
+                                                                                                         EAST = col_number()), locale = locale(decimal_mark = ","),trim_ws = TRUE)
+Rect_ICES_27<-dplyr::rename(Rect_ICES_27,Rect=ICESNAME)
+
+library(RColorBrewer)
+brewer.pal(9, "Set1")
+
+dev.off()
+png(paste0("./output/context/surveys_map.png"), height = 900, width = 1500)
+
+map_surveys<-function(data){
+  survey_colab <- NULL
+    for(j in 1:nrow(data)){
+      if(data$Survey[j]=="BTS"){
+        survey_colab <- c(survey_colab,"#E41A1C")
+      }else if(data$Survey[j]=="BTS-VIII"){
+        survey_colab <- c(survey_colab, "#FFFF33")
+      }else if(data$Survey[j]=="EVHOE"){
+        survey_colab <- c(survey_colab, "#4DAF4A") 
+      }else if(data$Survey[j]=="FR-CGFS"){
+        survey_colab <- c(survey_colab, "#984EA3") 
+      }else if(data$Survey[j]=="IE-IGFS"){
+        survey_colab <- c(survey_colab, "#FF7F00")
+      }else if(data$Survey[j]=="NS-IBTS"){
+        survey_colab <- c(survey_colab, "#377EB8")
+      }else if(data$Survey[j]=="ROCKALL"){
+        survey_colab <- c(survey_colab, "#A65628")
+      }else if(data$Survey[j]=="SWC-IBTS"){
+        survey_colab <- c(survey_colab, "#F781BF") 
+      }else if(data$Survey[j]=="SCOROC"){
+        survey_colab <- c(survey_colab, "#999999") 
+      }
+    }
+  sampling <- data.frame(Rect = levels(as.factor(data$Rect)))
+  sampling <- left_join(sampling, Rect_ICES_27)
+  map(database = "world", ylim = c(min(data$Lat) - 9, max(data$Lat) + 2), xlim = c(min(data$Lon) - 10, max(data$Lon) + 10), fill = TRUE, col = "gray")
+  plot(data$Lon, data$Lat, col = survey_colab, pch = 20, cex = 2, xlab = "Longitude", ylab = "Latitude", cex.lab = 3, cex.axis = 3)
+  survey_colab <- as.factor(survey_colab)
+  survey_colab <- fct_relevel(survey_colab, c("#E41A1C", "#FFFF33", "#4DAF4A", "#984EA3", "#FF7F00", "#377EB8", "#A65628", "#F781BF", "#999999"))
+  survey_colab <- as.character(levels(survey_colab))
+  rect(xleft = sampling$WEST, ybottom = sampling$SOUTH, xright = sampling$EAST, ytop = sampling$NORTH)
+  map(database = "world", ylim = c(min(data$Lat) - 9, max(data$Lat) + 2), xlim = c(min(data$Lon) - 10, max(data$Lon) + 10), fill = TRUE, col = "gray", add = T)
+  legend(max(data$Lon) - 5, max(data$Lat) - 12,
+    bg = "#FFFFFF",
+    legend = c("BTS", "BTS-VIII", "EVHOE", "FR-CGFS", "IE-IGFS", "NS-IBTS", "SWC-IBTS", "ROCKALL", "SCOROC"),
+    fill = survey_colab, cex = 2, title = "Surveys"
+  )
+  scalebar(d = 200, xy = c(min(data$Lon), min(data$Lat)), type = "bar", below = "km", lwd = 5, divs = 2, col = "black", cex = 2, lonlat = T)
+}
+
+print(map_surveys(ab_pa))
+dev.off()
+```
+
+## Supplementary table
+
+```{r}
+list_surveys <- list()
+ab_pa$Survey <- as.factor(ab_pa$Survey)
+ab_pa$Gear <- as.factor(ab_pa$Gear)
+ab_pa$Quarter <- as.factor(ab_pa$Quarter)
+
+for (i in levels(ab_pa$Survey)){
+  survey_i <- dplyr::filter(ab_pa, Survey == i)
+  print(summary(survey_i))
+  list_surveys <- c(list_surveys, list(survey_i))
+}
+```
+
+
+## Survey selectivity per species
+```{r}
+tmp <- data.frame(Survey = ab_pa$Survey, HaulsID = ab_pa$HaulsID, pa = rowSums(ab_pa[, 13:ncol(ab_pa)]))
+survey_selectivity <- aggregate(pa ~ Survey, data = tmp, FUN = sum)
+survey_selectivity$percent <- (gear_selectivity$pa / sum(gear_selectivity$pa)) * 100
+gear_selectivity
+
+gears_removed<-NA
+
+for (i in 1:nrow(gear_selectivity)){
+  gear_i <- gear_selectivity$Gear[i]
+  if(gear_selectivity$percent[i] < 1){
+  ab_pa <- dplyr::filter(ab_pa, Gear != all_of(gear_i))  
+  gears_removed<-c(gears_removed,gear_i)
+  }
+}
+```
+
+
+# REGRID PA DATA
+## Loading data
+```{r}
+pa <- read.csv("./data/pa.csv")
+baseline <- stack("./data/grid/baseline.grd")
+taxon <- colnames(pa[13:ncol(pa)])
+```
+
+## Recategorize trawl gears
+```{r}
+pa$Gear[pa$Gear == "BT4A"] <- "BTs"
+pa$Gear[pa$Gear == "BT4AI"] <- "BTs"
+pa$Gear[pa$Gear == "BT8"] <- "BTs"
+```
+
+
+## Add gears and quarter columns
+```{r}
+gears <- levels(as.factor(pa$Gear))
+gears
+
+#pa$BT4A <- 0
+#pa$BT4AI <- 0
+#pa$BT8 <- 0
+pa$GOV <- 0
+pa$BTs <- 0
+
+for (i in 1:length(gears)){
+  gears_i <- gears[i]
+  row_i  <- which(pa$Gear == gears_i)
+  pa[row_i, gears_i] <- 1
+}
+```
+```{r}
+quarter <- levels(as.factor(pa$Quarter))
+quarter
+
+pa$Q1 <- 0
+pa$Q3 <- 0
+pa$Q4 <- 0
+
+for (i in 1:length(quarter)){
+  quarter_i <- paste0("Q",quarter[i])
+  row_i  <- which(pa$Quarter == quarter[i])
+  pa[row_i, quarter_i] <- 1
+}
+
+quarter <- c("Q1", "Q3", "Q4")
+```
+
+## Prepare the cuts
+```{r}
+ts <- as.numeric(levels(as.factor(pa$Year)))
+pa_ts <- list()
+name_pa <- NA
+
+for (i in 1:length(ts)){
+  year_i <- ts[i]
+  name_pa_i <- paste0("pa_", year_i)
+  pa_i <- dplyr::filter(pa, Year == year_i)
+  pa_ts <- c(pa_ts, list(pa_i))
+  name_pa <- c(name_pa, name_pa_i)
+}
+
+names(pa_ts) <- name_pa[-1]
+```
+
+## Rasterize pa dataset without differentiate species
+```{r}
+pa_ts_r <- stack()
+
+for (i in 1:length(pa_ts)){
+  pa_ts_i <- pa_ts[[i]]
+  
+  pa_ts_i <- data.frame(Lon = pa_ts_i$Lon, 
+                    Lat = pa_ts_i$Lat, 
+                    pa_ts_i[, 13:ncol(pa_ts_i)])
+  pa_ts_i <- cbind(pa_ts_i[, 1:2], 
+                 sum = rowSums(pa_ts_i[,3:ncol(pa_ts_i)]))
+  pa_ts_i <- cbind(pa_ts_i[,1:2], 
+                   Observed=decostand(pa_ts_i[,3],method="pa"))
+  
+  pa_ts_i_r <- rasterize(x = pa_ts_i[, c("Lon", "Lat")], 
+                      y = baseline,
+                      field = pa_ts_i[, "Observed"],
+                      fun = function(x, ...) sum(x, ...))
+
+  try(dev.off())  
+  png(paste0("./output/context/pa_year/all_sp",names(pa_ts[i]),".png"), height = 900, width = 1200)
+  print(plot(pa_ts_i_r, col = c("#FEF0D9", "#FDCC8A", "#FC8D59", "#E34A33", "#B30000")))
+  dev.off()
+  
+  pa_ts_r <- stack(pa_ts_r, pa_ts_i_r)
+}
+```
+```{r}
+names(pa_ts_r) <- name_pa[-1]
+writeRaster(pa_ts_r, "./data/grid/pa_ts_r_new", overwrite = T)
+```
+
+## Rasterize pa dataset per species/gear/quarter
+```{r}
+pa_sp_ts_r <- stack()
+
+for (i in 1:length(pa_ts)){
+  pa_ts_i <- pa_ts[[i]]
+  for (j in 13:ncol(pa_ts_i)){
+    
+    sp_j <- colnames(pa_ts_i[j])
+    pa_ts_sp_j <- data.frame(Lon = pa_ts_i$Lon, 
+                    Lat = pa_ts_i$Lat, 
+                    Observed = pa_ts_i[, j])
+    pa_ts_sp_j_r <- rasterize(x = pa_ts_sp_j[, c("Lon", "Lat")], 
+                      y = baseline,
+                      field = pa_ts_sp_j[, "Observed"],
+                      fun = function(x, ...) sum(x, ...))
+    names(pa_ts_sp_j_r) <- paste0(names(pa_ts[i]), "_", sp_j)
+    
+    #try(dev.off()) 
+    #png(paste0(initial_wd, "output/context/pa_year/",  sp_j, "_", names(pa_ts[i]), ".png"), height = 900, width = 1200)
+    #print(plot(pa_ts_sp_j_r, col = c("#FEF0D9", "#FDCC8A", "#FC8D59", "#E34A33", "#B30000")))
+    #dev.off()
+  
+  pa_sp_ts_r <- stack(pa_sp_ts_r, pa_ts_sp_j_r)
+  }
+}
+
+writeRaster(pa_sp_ts_r, "./data/grid/pa_year_sp_gears_quarter_r_new", overwrite = T)
+```
+
+# REMAKE A DATAFRAME
+## One dataframe per year
+```{r}
+pa_sp_ts_r <- stack("./data/grid/pa_year_sp_gears_quarter_r_new")
+
+n_col <- as.numeric(length(pa[,13:ncol(pa)]))
+start_year <- seq(1, nlayers(pa_sp_ts_r), n_col)
+df <- dplyr::select(pa, Lon, Lat, Year, Quarter, all_of(taxon))
+df[,] <- NA
+df <- na.omit(df)
+
+for (i in 1:length(start_year)){
+  ts_i <- ts[i]
+  start <- start_year[i]
+  end <- start_year[i] + n_col
+  seq_i <- seq(start, end)
+  seq_i <- seq_i[-length(seq_i)]
+  df_i <- as.data.frame(pa_sp_ts_r[[seq_i]], na.rm = T, xy = T)
+  df_i <- cbind(df_i[,1:2], decostand(df_i[,3:ncol(df_i)], method = "pa"))
+  df_i$Year <- ts_i
+  df_i <- relocate(df_i, Year, .after = y)
+  colnames(df_i) <- c("Lon", "Lat", "Year", taxon, gears, quarter)
+  tmp <- dplyr::select(df_i, all_of(c(gears,quarter)))
+  tmp[tmp == 0] <- NA
+  #tmp["BT4A"][tmp["BT4A"] == 1] <- "BT4A"
+  #tmp["BT4AI"][tmp["BT4AI"] == 1] <- "BT4AI"
+  #tmp["BT8"][tmp["BT8"] == 1]  <- "BT8"
+  tmp["BTs"][tmp["BTs"] == 1]  <- "BTs"
+  tmp["GOV"][tmp["GOV"] == 1] <- "GOV"
+  tmp["Q1"][tmp["Q1"] == 1] <- "Q1"
+  tmp["Q3"][tmp["Q3"] == 1] <- "Q3"
+  tmp["Q4"][tmp["Q4"] == 1] <- "Q4"
+  df_i <- cbind(df_i[1:(3+length(taxon))], tmp)
+  df_i <- unite(df_i, col = Gear, all_of(gears), sep = "_", remove = T, na.rm = T)
+  df_i <- relocate(df_i, Gear, .after = Year)
+  df_i <- unite(df_i, col = Quarter, all_of(quarter), sep = "_", remove = T, na.rm = T)
+  df_i <- relocate(df_i, Quarter, .after = Gear)
+  df <- rbind(df, df_i)
+}
+
+write.csv(df, "./data/pa_grid_new.csv", row.names = F)
+```
+
+## Global zero inflation
+```{r}
+df <- read.csv("./data/pa_grid_new.csv")
+
+zero.inflation <- function(df){
+  zero_inflation <- sum(apply(df[, 6:ncol(df)], 2, function(x) length(x[x == 0]))) / (nrow(df) * ncol(df[, 6:ncol(df)])) * 100
+  cat(paste("---- There is", round(zero_inflation), "% of absence ----" ))
+  return(zero_inflation)
+}
+
+zero_inflation <- zero.inflation(df)
+```
+
+## Zero inflation per species
+```{r}
+zero.inflation.sp <- function(df){
+  zero_inflation_sp <- data.frame(pa=(apply(df[, 6:ncol(df)], 2, function(x) length(x[x == 1])) / nrow(df)) * 100)
+  zero_inflation_sp$taxon <- rownames(zero_inflation_sp)
+  for(i in 1:nrow(zero_inflation_sp)){
+    cat(paste("----", zero_inflation_sp$taxon[i]), "is present in", zero_inflation_sp$pa[i], "% of the hauls ---- \n")
+  }
+  return(zero_inflation_sp)
+}
+
+zero_inflation_sp <- zero.inflation.sp(df)
+```
+
+## Area covered by species
+```{r}
+df <- unite(df, col = id, Lon, Lat, remove = F)
+tmp <- aggregate(df[7:ncol(df)], by = list(df$id), FUN = sum)
+
+for (i in 2:ncol(tmp)){
+  tmp_i<- tmp[i]
+  colnames(tmp_i) <- c("obs")
+  tmp_i <- dplyr::filter(tmp_i, obs !=0)
+  zero_inflation_sp$obs_surface[i-1] <- nrow(tmp_i)/nrow(tmp)*100
+}
+
+zero_inflation_sp
+```
+
+## Dispersion per species
+```{r}
+tmp <- separate(tmp, Group.1, c("Lon", "Lat"), remove = F, sep = "_")
+tmp$Lon <- as.numeric(tmp$Lon)
+tmp$Lat <- as.numeric(tmp$Lat)
+
+for (i in 4:ncol(tmp)){
+  tmp_i<- cbind(tmp[2:3], tmp[i])
+  colnames(tmp_i) <- c("Lon", "Lat", "obs")
+  tmp_i <- dplyr::filter(tmp_i, obs !=0)
+  zero_inflation_sp$disp_lat[i-3] <- sd(tmp_i$Lat)
+  zero_inflation_sp$disp_lon[i-3] <- sd(tmp_i$Lon)
+}
+zero_inflation_sp
+```
+
+
+## Map of total species presence
+```{r}
+data <- read.csv("./data/pa_grid_new.csv", header = T)
+data$Lon <- round(data$Lon, digits = 5)
+data$Lat <- round(data$Lat, digits = 5)
+data <- unite(data, col = id, Lon, Lat, remove = F)
+
+grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
+grid <- grid[, -1]
+grid <- dplyr::filter(grid, Year == 1997)
+```
+```{r}
+for (i in 7:ncol(data)){
+  data_i <- cbind(data[, 1:5], sum = data[, i])
+  
+  sum_i <- aggregate(sum ~ id, data = data_i, FUN = sum)
+  sum_i <- separate(sum_i, id, c("Lon", "Lat"), remove = F, sep = "_")
+  sum_i$Lon <- as.numeric(sum_i$Lon)
+  sum_i$Lat <- as.numeric(sum_i$Lat)
+  
+  map <- ggplot(world) +
+  geom_tile(data = sum_i, 
+                 aes(x = Lon, y = Lat, 
+                 fill = sum)) +
+      geom_sf(data = world, 
+             fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(grid$Lon), max(grid$Lon)), 
+           ylim = c(min(grid$Lat), max(grid$Lat))) +
+      theme_bw(150) +
+      theme(panel.grid = element_blank()) +
+    theme(axis.title = element_blank()) +
+    theme(legend.position = "bottom", legend.title = element_blank()) +
+    labs(fill = colnames(data[i])) +
+    scale_fill_gradient2(low = "#343d46", high = "#ff084a", midpoint = 1) +
+    guides(fill = guide_colourbar(barwidth = 50,
+                                barheight = 2))
+  
+  try(dev.off())  
+  png(paste0("./output/context/presence/", colnames(data[i]), "_presence.png"), width = 2100, height = 3000)
+    print(map)
+    dev.off()
+}
+```
+
+
+
+# A. RADIATA ISSUE
+```{r}
+ab <- read.csv("data/raw/abundance.csv", header = T)
+```
+
+The issue is in the Q3 and between BTS and NS-IBTS surveys
+
+```{r}
+ab <- dplyr::filter(ab, Quarter == 3)
+ab <- dplyr::filter(ab, Survey  %in% c("BTS", "NS-BTS"))
+```
+
+```{r}
+map_gears <- function(data){
+  gear_colab <- NULL
+  for(j in 1:nrow(data)){
+      if(data$Gear[j]=="BT4A"){
+        gear_colab <- c(gear_colab, "#bdea5a")
+      }else if(data$Gear[j]=="BT4AI"){
+        gear_colab <- c(gear_colab, "#625e49") 
+      }else if(data$Gear[j]=="BT8"){
+        gear_colab <- c(gear_colab, "#d4994a") 
+      }
+    }
+    gear_col<-c("#bdea5a", "#625e49", "#d4994a")
+    maps::map(database = "world", ylim=c(min(data$Lat)-7,max(data$Lat)+2),xlim=c(min(data$Lon)-10,max(data$Lon)+10),fill=TRUE,col="gray")
+    plot(data$Lon,data$Lat,col=gear_colab,pch=20,cex=1,xlab="Longitude",ylab="Latitude")
+    maps::map(database = "world", ylim=c(min(data$Lat)-7,max(data$Lat)+2),xlim=c(min(data$Lon)-10,max(data$Lon)+10),fill=TRUE,col="gray",add=T)
+    scalebar(d = 200, xy = c(min(data$Lon), min(data$Lat)), type = "bar", below = "km",lwd = 5, divs = 2, col = "black", cex = 0.85, lonlat = T)
+    legend(max(data$Lon)-2.5, max(data$Lat),bg="#FFFFFF",
+           legend=c("BT4A" , "BT4AI", "BT8"),
+           fill =gear_col, cex = 0.85, title = "Gears")
+}
+
+map_gears(ab)
+```
+
+Looking for difference between lands
+
+```{r}
+ab <- dplyr::filter(ab, Gear != "BT8")
+ab <- dplyr::filter(ab, Gear != "BT7")
+
+levels(as.factor(ab$Country))
+
+map_country <- function(data){
+  gear_colab <- NULL
+  for(j in 1:nrow(data)){
+      if(data$Gear[j]=="BT4A"){
+        gear_colab <- c(gear_colab, "#bdea5a")
+      }else if(data$Gear[j]=="BT4AI"){
+        gear_colab <- c(gear_colab, "#625e49") 
+      }
+  }
+    gear_col<-c("#bdea5a", "#625e49")
+    maps::map(database = "world", ylim=c(min(data$Lat)-7,max(data$Lat)+2),xlim=c(min(data$Lon)-10,max(data$Lon)+10),fill=TRUE,col="gray")
+    plot(data$Lon,data$Lat,col=gear_colab,pch=20,cex=1,xlab="Longitude",ylab="Latitude")
+    maps::map(database = "world", ylim=c(min(data$Lat)-7,max(data$Lat)+2),xlim=c(min(data$Lon)-10,max(data$Lon)+10),fill=TRUE,col="gray",add=T)
+    scalebar(d = 200, xy = c(min(data$Lon), min(data$Lat)), type = "bar", below = "km",lwd = 5, divs = 2, col = "black", cex = 0.85, lonlat = T)
+    legend(max(data$Lon)-2.5, max(data$Lat),bg="#FFFFFF",
+           legend= c("BT4A" , "BT4AI"),
+           fill =gear_col, cex = 0.85, title = "Gears")
+    title("BE, BEL, ENG, GB")
+}
+
+map_country(ab)
+```
+

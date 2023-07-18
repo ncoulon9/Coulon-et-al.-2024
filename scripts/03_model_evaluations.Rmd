@@ -1,0 +1,544 @@
+---
+title: "03_model_evaluations"
+author: "Noemie Coulon"
+date: "28/02/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# LOADING PACKAGES & FUNCTIONS
+```{r}
+if(!require(tidyverse)){install.packages("tidyverse"); library(tidyverse)}
+if(!require(knitr)){install.packages("knitr"); library(knitr)}
+if(!require(Hmsc)){install.packages("Hmsc"); library(Hmsc)}
+if(!require(sf)){install.packages("sf"); library(sf)}
+sf::sf_use_s2(FALSE) 
+if(!require(rnaturalearth)){install.packages("rnaturalearth"); library(rnaturalearth)}
+if(!require(ggthemes)){install.packages("ggthemes"); library(ggthemes)}
+if(!require(rgeos)){install.packages("rgeos"); library(rgeos)}
+if(!require(caret)){install.packages("caret"); library(caret)}
+if(!require(PresenceAbsence)){install.packages("PresenceAbsence"); library(PresenceAbsence)}
+```
+
+# SET DIRECTORIES
+```{r}
+localDir = "." 
+dataDir = file.path(localDir, "data") 
+ModelDir = file.path(localDir, "models") 
+MixingDir = file.path(localDir, "mixing")
+MFDir = file.path(localDir, "model_fit")
+```
+
+# LOAD MODEL
+```{r}
+load(paste0(ModelDir, "/pa_traits_phylo_probit_thin_3.RData"))
+```
+
+# MCMC CONVERGENCE
+
+A key step in MCMC-based Bayesian analysis is to assess the performance of the sampling procedure by evaluating chain mixing and convergence.
+
+```{r}
+mpost <- convertToCodaObject(m)
+```
+```{r}
+try(dev.off())
+pdf("output/traits_phylo_3/pa_traits_phylo_probit_thin_3.pdf")
+plot(mpost$Beta)
+dev.off()
+```
+
+Chain mixing can be evaluated, for example, by assessing the effective size of the posterior sample, i.e. the sample size controlled for autocorrelation among sequential posterior samples
+
+## Chain mixing
+```{r}
+effect.size <- effectiveSize(mpost$Beta) # The effective sizes are close to the actual sample sizes
+effect.size <- data.frame(effect.size)
+effect.size$autocorrelation <- effect.size$effect.size / 2000
+
+1- mean(effect.size$autocorrelation)
+```
+
+The effective sample sizes are very close to the actual sample sizes, which are 2,000 (1,000 per chain). This indicates that there is very little autocorrelation among consecutive samples.
+
+## Convergence
+```{r}
+convergence <- as.data.frame(gelman.diag(mpost$Beta, multivariate = FALSE)$psrf) # The two chains gave consistent results
+mean(1 - (convergence$`Point est.`/convergence$`Upper C.I.`))
+```
+
+The potential scale reduction factors are very close to one, which indicates that the two chains gave consistent results, as was also suggested by visual inspection of the trace plots.
+
+## Conclusion
+
+The posterior sample is likely to be representative of the true posterior distribution, and thus the
+inference from the model can be trusted.
+
+# MODEL FIT
+
+## Explanatory power 
+```{r}
+preds = computePredictedValues(m)
+MF = evaluateModelFit(hM = m, predY = preds)
+
+mean(MF$AUC)
+sd(MF$AUC)
+
+AUC <- data.frame(taxon = dimnames(m$Y)[[2]],
+                  AUC = MF$AUC)
+
+write.csv(AUC, paste0(MixingDir, "/AUC.csv"), row.names = F)
+```
+
+Model has a relatively high AUC and hence relatively high power to discriminate presences from absences.
+
+## Predictive power 
+
+
+### Cross-validation
+
+The model is refitted to a subset of data and predictions made for sites not included in the model fit. It asks how accurately the model is able to predict the data used for model fitting when applying leave-one-out cross-validation
+
+```{r}
+partition <- createPartition(hM = m, nfolds = 10)
+predY <- computePredictedValues(m, expected = FALSE, partition = partition)
+save(predY, "predY_partition.Rdata")
+MFCV <- evaluateModelFit(hM = m, predY = predY)
+save(MFCV, "MFCV.Rdata")
+```
+
+
+
+### WAIC
+
+WAIC measures how accurately the model is able to predict previously unseen data. Model with the lowest WAIC value maximizes its predictive power, in the sense that WAIC asymptotically coincides.
+
+```{r}
+WAIC = computeWAIC(m)
+WAIC
+```
+
+WAIC is very close to 0 (2.65) which mean it predicts previously unseen data very well.
+
+#### Comparing with previous models
+
+```{r}
+load(paste0(ModelDir, "/pa_envt_probit_thin_50_samples_1000_poly_1.RData"))
+WAIC = computeWAIC(m)
+WAIC
+```
+
+2.65
+
+```{r}
+load(paste0(ModelDir, "/pa_envt_probit_thin_50_samples_1000_7bis.RData"))
+WAIC = computeWAIC(m)
+WAIC
+```
+
+2.70
+
+# NULL MODEL
+
+## Data
+```{r}
+data <- read.csv(paste0(dataDir, "/hindcast/pa_hindcast_traits.csv"))
+
+Y <- (data[, 7:ncol(data)])
+Y <- Y[order(names(Y))]
+Y <- as.matrix(Y)
+```
+```{r}
+envt <- read.csv(paste0(dataDir, "/hindcast/envt_hindcast_traits.csv"))
+
+
+envt <- dplyr::select(envt, -substrate)
+XData <- envt[, 5:ncol(envt)]
+```
+
+## Study design
+```{r}
+studyDesign <- matrix(NA, nrow(Y), 3)
+studyDesign[, 1] <- sprintf("Quarter_%s", data$Quarter)
+studyDesign[, 2] <- sprintf("Gear_%s", data$Gear)
+studyDesign[, 3] <- sprintf('Year_%.3d', data$Year)
+studyDesign <- as.data.frame(studyDesign)
+colnames(studyDesign) <- c("Quarter", "Gear", "Year")
+studyDesign[, 1] <- as.factor(studyDesign[, 1])
+studyDesign[, 2] <- as.factor(studyDesign[, 2])
+studyDesign[, 3] <- as.factor(studyDesign[, 3])
+```
+
+## Spatially structured variables
+
+### Quarters
+```{r}
+quarters <- levels(studyDesign[, 1])
+nquarters <- length(quarters)
+xy <- matrix(0, nrow = nquarters, ncol = 2)
+
+for (i in 1:nquarters) {
+  rows <- studyDesign[, 1] == quarters[[i]]
+  xy[i, 1] <- mean(data[rows, ]$Lon)
+  xy[i, 2] <- mean(data[rows, ]$Lat)
+}
+colnames(xy) <- c("Lon", "Lat")
+
+sRLq <- xy
+rownames(sRLq) <- quarters
+rLq <- HmscRandomLevel(sData = sRLq)
+rLq$nfMin <- 5
+rLq$nfMax <- 10
+```
+
+### Gears
+```{r}
+gears <- levels(studyDesign[, 2])
+ngears <- length(gears)
+xy <- matrix(0, nrow = ngears, ncol = 2)
+
+for (i in 1:ngears) {
+  rows <- studyDesign[, 2] == gears[[i]]
+  xy[i, 1] <- mean(data[rows, ]$Lon)
+  xy[i, 2] <- mean(data[rows, ]$Lat)
+}
+colnames(xy) <- c("Lon", "Lat")
+
+sRLg <- xy
+rownames(sRLg) <- gears
+rLg <- HmscRandomLevel(sData = sRLg)
+rLg$nfMin <- 5
+rLg$nfMax <- 10
+```
+
+## Model
+```{r}
+mod <- Hmsc(Y = Y,
+          XData = XData, XFormula = ~1,
+          distr = "probit", 
+          studyDesign = studyDesign, ranLevels = list(Quarter = rLq, Gear = rLg))
+```
+```{r}
+thin <- 50 # the number of MCMC steps between each recording of samples from the posterior
+samples <- 1000 # the number of MCMC samples to be obtained in each chain
+nChains <- 2 # number of independent MCMC chains to be run
+adaptNf <- rep(ceiling(0.4*samples*thin),1) # a vector of length n_r with number of MCMC steps at which the adaptation of the number of latent factors is conducted
+transient <- 500*thin  # the number of MCMC steps that are executed before starting recording posterior samples 
+verbose <- 500*thin
+set.seed(1)
+ptm = proc.time() 
+```
+```{r}
+memory.size(8000000000000)
+
+filename <- paste0(ModelDir, "/null_model.RData")
+
+m = Hmsc::sampleMcmc(hM = mod, samples = samples, 
+               thin = thin,
+               transient =transient,
+               nChains = nChains,
+               verbose = verbose,
+               initPar = "fixed effects")
+
+save(m, file = filename)
+```
+
+## WAIC
+```{r}
+load(paste0(ModelDir, "/null_model.RData"))
+
+WAIC = computeWAIC(m)
+WAIC
+```
+
+
+# CROSS VALIDATION
+
+## 75/25
+### Data
+```{r}
+data <- read.csv(paste0(dataDir, "/hindcast/pa_hindcast_traits.csv"))
+data <- sample_n(data, (nrow(data) * 75/100))
+attach(data)
+data <- data[order(id), ]
+detach(data)
+
+envt <- read.csv(paste0(dataDir, "/hindcast/envt_hindcast_traits.csv"))
+envt <- dplyr::filter(envt, id %in% data$id)
+attach(envt)
+envt <- envt[order(id),]
+detach(envt)
+```
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+ggplot(world) +
+  geom_tile(data = envt, 
+                 aes(x = Lon, y = Lat, 
+                 fill = depth), 
+                 size = .85) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(envt$Lon), max(envt$Lon)), 
+           ylim = c(min(envt$Lat), max(envt$Lat))) +
+      theme_bw(15) +
+      theme(panel.grid = element_blank()) +
+      labs( fill = "Depth")+ 
+      xlab("Longitude") + 
+      ylab("Latitude")
+```
+```{r}
+phyloTree <- ape::read.tree(file.path(dataDir, "cons_full_resolved_10K_tree.txt"))
+```
+```{r}
+traits <- read_delim(paste0(dataDir, "/all_traits.csv"), delim = ";", escape_double = FALSE, trim_ws = TRUE)
+
+TrData <- traits
+TrData <- dplyr::select(TrData, 
+                        tl,
+                        fecundity,
+                        length.max,
+                        length.maturity,
+                        bathy.pref,
+                        lat.distri)
+rownames(TrData) <- traits$taxon
+```
+
+### Model
+```{r}
+Y <- (data[, 7:ncol(data)])
+Y <- Y[order(names(Y))]
+Y <- as.matrix(Y)
+
+## Environmental covariates 
+envt$depth <- abs(envt$depth)
+envt <- dplyr::select(envt, -substrate)
+XData <- envt[, 5:ncol(envt)]
+
+```
+```{r}
+studyDesign <- matrix(NA, nrow(Y), 3)
+studyDesign[, 1] <- sprintf("Quarter_%s", data$Quarter)
+studyDesign[, 2] <- sprintf("Gear_%s", data$Gear)
+studyDesign[, 3] <- sprintf('Year_%.3d', data$Year)
+studyDesign <- as.data.frame(studyDesign)
+colnames(studyDesign) <- c("Quarter", "Gear", "Year")
+studyDesign[, 1] <- as.factor(studyDesign[, 1])
+studyDesign[, 2] <- as.factor(studyDesign[, 2])
+studyDesign[, 3] <- as.factor(studyDesign[, 3])
+```
+```{r}
+quarters <- levels(studyDesign[, 1])
+nquarters <- length(quarters)
+xy <- matrix(0, nrow = nquarters, ncol = 2)
+
+for (i in 1:nquarters) {
+  rows <- studyDesign[, 1] == quarters[[i]]
+  xy[i, 1] <- mean(data[rows, ]$Lon)
+  xy[i, 2] <- mean(data[rows, ]$Lat)
+}
+colnames(xy) <- c("Lon", "Lat")
+
+sRLq <- xy
+rownames(sRLq) <- quarters
+rLq <- HmscRandomLevel(sData = sRLq)
+rLq$nfMin <- 5
+rLq$nfMax <- 10
+```
+```{r}
+gears <- levels(studyDesign[, 2])
+ngears <- length(gears)
+xy <- matrix(0, nrow = ngears, ncol = 2)
+
+for (i in 1:ngears) {
+  rows <- studyDesign[, 2] == gears[[i]]
+  xy[i, 1] <- mean(data[rows, ]$Lon)
+  xy[i, 2] <- mean(data[rows, ]$Lat)
+}
+colnames(xy) <- c("Lon", "Lat")
+
+sRLg <- xy
+rownames(sRLg) <- gears
+rLg <- HmscRandomLevel(sData = sRLg)
+rLg$nfMin <- 5
+rLg$nfMax <- 10
+```
+```{r}
+Xformula = ~ slope + depth + max_SST_summer +  max_ph_summer + substrate_diversity + AMO
+```
+```{r}
+TrFormula = ~ tl + fecundity + length.max + length.maturity+ bathy.pref + lat.distri
+```
+```{r}
+mod <- Hmsc(Y = Y,
+          XData = XData, XFormula = Xformula,
+          TrData = TrData, TrFormula = TrFormula,
+          phyloTree = phyloTree,
+          distr = "probit", 
+          studyDesign = studyDesign, ranLevels = list(Quarter = rLq, Gear = rLg))
+```
+```{r}
+thin<-50 # the number of MCMC steps between each recording of samples from the posterior
+samples<-1000 # the number of MCMC samples to be obtained in each chain
+nChains<-2 # number of independent MCMC chains to be run
+adaptNf <- rep(ceiling(0.4*samples*thin),1) # a vector of length n_r with number of MCMC steps at which the adaptation of the number of latent factors is conducted
+transient <- 500*thin  # the number of MCMC steps that are executed before starting recording posterior samples 
+verbose<-500*thin
+set.seed(1)
+ptm = proc.time() 
+```
+```{r}
+memory.size(8000000000000)
+m = Hmsc::sampleMcmc(hM = mod, samples = samples, 
+               thin = thin,
+               transient =transient,
+               nChains = nChains,
+               verbose=verbose,
+               initPar = "fixed effects")
+
+filename = file.path(ModelDir, paste0("traits_phylo_", as.character(m), "_pa_probit_thin_", ... = as.character(thin), "_samples_", as.character(samples), "75_25.Rdata"))
+
+save(m, file = filename)
+```
+
+### Predictions
+
+#### All
+```{r}
+load("./cluster/pa_traits_phylo_probit_thin_2_75_25_bis.Rdata")
+load("./cluster/data_75.Rdata")
+
+pa_hindcast_75 <- data
+rm(data)
+```
+```{r}
+pa_hindcast <- read.csv(paste0(dataDir, "/hindcast/pa_hindcast_traits.csv"))
+
+envt_hindcast <- read.csv(paste0(dataDir, "/hindcast/envt_hindcast_traits.csv"))
+envt_hindcast <- dplyr::select(envt_hindcast, -substrate)
+```
+```{r}
+grid <- dplyr::filter(envt_hindcast, id %in% pa_hindcast$id)
+grid <- dplyr::filter(grid, !id %in% pa_hindcast_75$id)
+
+ts <- levels(as.factor(grid$Year))
+```
+```{r}
+xy.grid <- as.matrix(cbind(grid$Lon, grid$Lat))
+XData.grid <- dplyr::select(grid, -Lon, -Lat)
+
+EpredY_list <- list()
+
+try(dir.create(paste0(MixingDir,"/mean_predictions"), recursive = T))
+
+for (i in 1:length(ts)){
+  year_i <- as.numeric(ts[i])
+  
+  cat(paste("----", Sys.time(), "----", year_i, "projections started ----\n", sep = " "))
+  
+  grid_i <- dplyr::filter(grid, Year == all_of(year_i))
+  xy.grid <- as.matrix(cbind(grid_i$Lon, grid_i$Lat))
+  XData.grid <- dplyr::select(grid_i, -Lon, -Lat)
+  
+  Gradient <- prepareGradient(m, XDataNew = XData.grid, sDataNew = list(Quarter = xy.grid, Gear = xy.grid))
+  predY <- predict(m, Gradient = Gradient, predictEtaMean = T, type = "response")
+  
+  try(dir.create(paste0(MixingDir,"/all_predictions"), recursive = T))
+  
+  save(predY, file = paste0(MixingDir,"/all_predictions/predY_", year_i, "_list_poly_traits_3.Rdata"))
+  EpredY <- Reduce("+", predY) / length(predY)
+  
+  EpredY_list <- c(EpredY_list, list(EpredY))
+}
+
+save(EpredY_list, file = paste0(MixingDir,"/mean_predictions/EpredY_list_traits_phylo_3.Rdata"))
+```
+
+#### Average
+```{r}
+load(paste0(MixingDir,"/mean_predictions/EpredY_list_traits_phylo_3.Rdata"))
+
+preds <- data.frame(t(m$Y[2, ]))
+
+for (i in 1:length(ts)){
+  
+  year_i <- as.numeric(ts[i])
+  
+  grid_i <- dplyr::filter(grid, Year == all_of(year_i))
+  grid_i <- select(grid_i, id)
+  
+  EpredY_i <- cbind(grid_i,
+                    data.frame(EpredY_list[[i]]))
+  
+  preds <- bind_rows(preds, EpredY_i)
+  
+}
+
+rm(year_i)
+rm(grid_i)
+rm(EpredY_i)
+
+preds <- preds[-1, ]
+```
+```{r}
+preds <- arrange(preds, id)
+rownames(preds) <- preds$id
+preds <- preds[, -10]
+```
+
+### Confusion matrix
+
+#### Obs
+```{r}
+pa_hindcast_25 <- dplyr::filter(pa_hindcast, !id %in% pa_hindcast_75$id)
+pa_hindcast_25 <- arrange(pa_hindcast_25, id)
+rownames(pa_hindcast_25) <- pa_hindcast_25$id
+pa_hindcast_25 <- pa_hindcast_25[, 7:15]
+pa_hindcast_25 <- select(pa_hindcast_25, order(colnames(pa_hindcast_25)))
+```
+
+#### Threshold & Stat
+```{r}
+mat <- data.frame()
+mat_stat <- data.frame()
+
+for (i in 1:ncol(pa_hindcast_25)){
+  
+  obs_sp_i <- dplyr::filter(pa_hindcast_25[i])
+  preds_sp_i <- dplyr::filter(preds[i])
+  
+  preds_sp_i[ which.min(preds_sp_i[, 1]), ] <- 0
+  
+  table_cmx <- cbind(obs_sp_i, preds_sp_i)
+  table_cmx <- as.data.frame(table_cmx)
+  table_cmx$ID <- rownames(table_cmx)
+  head(table_cmx)
+  
+  # error.threshold.plot(table_cmx,opt.thresholds = TRUE)
+  threshold_i <- optimal.thresholds(table_cmx, opt.methods = "MaxPCC")[[2]]
+  
+  mat_i <- cbind(taxon = colnames(obs_sp_i),
+                 data.frame(cmx(table_cmx, threshold = threshold_i, which.model = 1, na.rm = FALSE)))
+  
+  PPV_i <- mat_i[1, 4] / ( mat_i[1, 4] + mat_i[3, 4])
+  NPV_i <- mat_i[4, 4] / ( mat_i[4, 4] + mat_i[2, 4])
+  
+  mat_stat_i <- data.frame(taxon = colnames(obs_sp_i),
+                      PPV = PPV_i,
+                      NPV = NPV_i,
+                      threshold = threshold_i)
+  
+  mat <- bind_rows(mat, mat_i)
+  mat_stat <- bind_rows(mat_stat, mat_stat_i)
+}
+
+mat_stat
+```
+
+### Export
+```{r}
+write.csv(mat, paste0(MixingDir, "/confusion_matrix.csv"), row.names = F)
+write.csv(mat_stat, paste0(MixingDir, "/confusion_matrix_stat.csv"), row.names = F)
+```
+

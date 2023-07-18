@@ -1,0 +1,629 @@
+---
+title: "05_predictions_baseline"
+author: "Noemie Coulon"
+date: "28/02/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# LOADING PACKAGES & FUNCTIONS
+```{r}
+if(!require(tidyverse)){install.packages("tidyverse"); library(tidyverse)}
+if(!require(knitr)){install.packages("knitr"); library(knitr)}
+if(!require(Hmsc)){install.packages("Hmsc"); library(Hmsc)}
+if(!require(abind)){install.packages("abind"); library(abind)}
+if(!require(ggplot2)){install.packages("ggplot2"); library(ggplot2)}
+if(!require(sf)){install.packages("sf"); library(sf)}
+sf::sf_use_s2(FALSE) 
+if(!require(rnaturalearth)){install.packages("rnaturalearth"); library(rnaturalearth)}
+if(!require(ggthemes)){install.packages("ggthemes"); library(ggthemes)}
+if(!require(rgeos)){install.packages("rgeos"); library(rgeos)}
+if(!require(factoextra)){install.packages("factoextra"); library(factoextra)}
+if(!require(FactoMineR)){install.packages("FactoMineR"); library(FactoMineR)}
+if(!require(sp)){install.packages("sp"); library(sp)}
+if(!require(prevR)){install.packages("prevR"); library(prevR)}
+if(!require(raster)){install.packages("raster"); library(raster)}
+if(!require(trend)){install.packages("trend"); library(trend)}
+if(!require(viridis)){install.packages("viridis"); library(viridis)}
+if(!require(GDAtools)){install.packages("GDAtools"); library(GDAtools)}
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+```
+
+# SET DIRECTORIES
+```{r}
+localDir = "." 
+dataDir = file.path(localDir, "data") 
+ModelDir = file.path(localDir, "models") 
+MixingDir = file.path(localDir, "mixing")
+MFDir = file.path(localDir, "model_fit")
+```
+
+# LOAD MODEL, MODEL HINDCAST and BASELINE
+```{r}
+load(paste0(ModelDir, "/pa_traits_phylo_probit_thin_3.RData"))
+
+pa_hindcast <- read.csv(paste0(dataDir, "/hindcast/pa_hindcast_traits.csv"))
+envt_hindcast <- read.csv(paste0(dataDir, "/hindcast/envt_hindcast_traits.csv"))
+envt_hindcast <- dplyr::select(envt_hindcast, -substrate)
+
+grid <- read.csv(paste0(dataDir, "/envt_var_selected_df.csv"))
+grid$depth <- abs(grid$depth)
+grid <- dplyr::select(grid, -substrate)
+```
+
+# GRADIENT
+```{r}
+focalVariable <- colnames(grid[, 5:ncol(grid)])
+
+try(dir.create(paste0("./output/traits_phylo_3/Gradient"), recursive = T))
+
+for (i in 1:length(focalVariable)){
+   var_i <- focalVariable[i]
+   Gradient = constructGradient(m, focalVariable = var_i)
+   predY = predict(m, XData = Gradient$XDataNew, studyDesign = Gradient$studyDesignNew,
+ranLevels = Gradient$rLNew, expected = T)
+   png(paste0("./output/traits_phylo_3/Gradient/focalVariable_", var_i, ".png"), height = 900, width = 1200) 
+   plotGradient(m, Gradient, pred = predY, measure="S", las=1, showData = T, main = 'Species richness (measure="S")')
+   dev.off()
+}
+```
+
+
+# SPATIAL VARIATION 
+
+## Do not extrapolate
+
+PCA is performed to resume environmental conditions
+
+```{r}
+grid_pca <- unite(grid, id, c("id", "Year"), sep= "_", remove = F)
+grid_pca <- dplyr::filter(grid_pca, ! id %in% envt_hindcast$id)
+grid_pca$proj <- "forecast"
+
+envt_hindcast_pca <- envt_hindcast
+envt_hindcast_pca$proj <- "hindcast"
+envt_hindcast_pca <- relocate(envt_hindcast_pca, id, .before = Lon)
+
+grid_pca <- rbind(grid_pca, envt_hindcast_pca)
+drivers <- grid_pca[, 5:10]
+```
+```{r}
+res.pca <- PCA(grid_pca[, 5:10], axes = c(1, 2))
+coord_pca <- cbind(grid_pca, res.pca$ind$coord)
+```
+```{r}
+fviz_pca_ind (res.pca, col.ind = grid_pca$proj, geom = "point", axes = c(1, 2))
+fviz_eig(res.pca, addlabels = T)
+```
+```{r}
+fviz_contrib(res.pca, choice = "var", axes = 1:2, top = 10)
+```
+
+### Convex hull
+
+The convex hull of hindcast data is calculated
+
+```{r}
+conv.hull <- coord_pca %>%
+  group_by(proj) %>%
+  mutate(hull = 1:n(), hull = factor(hull, chull(Dim.1, Dim.2))) %>%
+  arrange(hull)
+```
+```{r}
+ggplot(conv.hull, aes(Dim.1, Dim.2, color = proj, fill = proj)) +
+  geom_point() +
+  geom_polygon(data = filter(conv.hull, !is.na(hull)), alpha = 0.4) +
+  guides(fill = FALSE, colour = FALSE) +
+  theme_bw(60) +
+  theme(panel.grid = element_blank())
+```
+
+We would like to know which environmental condition is within/without the hindcast convex hull
+
+```{r}
+poly_hull <- sp::Polygon(cbind(conv.hull[, 12], conv.hull[, 13]))
+poly_hull <- sp::Polygons(list(poly_hull), ID = "hindcast_hull")
+poly_hull <- sp::SpatialPolygons(list(poly_hull))
+
+coord_pca$place <- point.in.SpatialPolygons(coord_pca$Dim.1, coord_pca$Dim.2, poly_hull)
+coord_pca$place[coord_pca$place == "TRUE"] <- "in"
+coord_pca$place[coord_pca$place == "FALSE"] <- "out"
+```
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+ggplot(world) +
+  geom_tile(data = coord_pca, 
+                 aes(x = Lon, y = Lat, 
+                 fill = place), 
+                 size = .85) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(coord_pca$Lon), max(coord_pca$Lon)), 
+           ylim = c(min(coord_pca$Lat), max(coord_pca$Lat))) +
+      theme_bw(15) +
+      theme(panel.grid = element_blank()) +
+      labs( fill = "Hindcast\nconvex hull")+ 
+      xlab("Longitude") + 
+      ylab("Latitude")
+```
+```{r}
+coord_pca <- dplyr::filter(coord_pca, place == "in")
+coord_pca<- unite(coord_pca, id, c("Lon", "Lat"), sep = "_", remove = T)
+
+write.csv(coord_pca, paste0(dataDir, "/coord_pca.csv"))
+```
+
+### Filter
+```{r}
+min.depth <- max(envt_hindcast$depth)
+max.depth <- min(envt_hindcast$depth)
+
+grid <- dplyr::filter(grid, depth < min.depth)
+grid <- dplyr::filter(grid, depth > max.depth)
+
+grid <- dplyr::filter(grid, Lon > -12)
+
+supp <- rbind(dplyr::filter(grid, Lon < -3 & Lat > 60.5),
+              dplyr::filter(grid, Lon > 4 & Lat > 58))
+grid <- dplyr::filter(grid, !id  %in% supp$id)
+
+write.csv(grid, paste0(dataDir, "/grid_projection.csv"))
+```
+```{r}
+ggplot(world) +
+  geom_tile(data = grid, 
+                 aes(x = Lon, y = Lat, 
+                 fill = depth), 
+                 size = .85) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(grid$Lon), max(grid$Lon)), 
+           ylim = c(min(grid$Lat), max(grid$Lat))) +
+      theme_bw(15) +
+      theme(panel.grid = element_blank()) +
+      labs( fill = "Depth")+ 
+      xlab("Longitude") + 
+      ylab("Latitude")
+```
+
+## Predictions
+
+### Context
+```{r}
+grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
+grid <- grid[, -1]
+ts <- levels(as.factor(envt_hindcast$Year))
+```
+
+```{r}
+xy.grid <- as.matrix(cbind(grid$Lon, grid$Lat))
+XData.grid <- dplyr::select(grid, -Lon, -Lat)
+
+EpredY_list <- list()
+
+try(dir.create(paste0(MFDir,"/mean_predictions"), recursive = T))
+
+for (i in 1:length(ts)){
+  year_i <- as.numeric(ts[i])
+  
+  cat(paste("----", Sys.time(), "----", year_i, "projections started ----\n", sep = " "))
+  
+  grid_i <- dplyr::filter(grid, Year == all_of(year_i))
+  xy.grid <- as.matrix(cbind(grid_i$Lon, grid_i$Lat))
+  XData.grid <- dplyr::select(grid_i, -Lon, -Lat)
+  
+  Gradient <- prepareGradient(m, XDataNew = XData.grid, sDataNew = list(Quarter = xy.grid, Gear = xy.grid))
+  predY <- predict(m, Gradient = Gradient, predictEtaMean = T, type = "response")
+  
+  save(predY, file = paste0(MFDir,"/all_predictions/predY_", year_i, "_list_poly_traits_3.Rdata"))
+  EpredY <- Reduce("+", predY) / length(predY)
+  
+  EpredY_list <- c(EpredY_list, list(EpredY))
+}
+
+save(EpredY_list, file = paste0(MFDir,"/mean_predictions/EpredY_list_traits_phylo_3.Rdata"))
+
+# save(EpredY_list, file = paste0(MFDir,"/mean_predictions/EpredY_list_A_radiata_only.Rdata"))
+# save(EpredY_list, file = paste0(MFDir,"/mean_predictions/EpredY_list_A_radiata_without.Rdata"))
+```
+
+## Maps
+```{r}
+load(paste0(MFDir,"/mean_predictions/EpredY_list_traits_phylo_3.Rdata"))
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+for (i in 1:length(ts)){
+  year_i <- as.numeric(ts[i])
+  
+  cat(paste("----", Sys.time(), "----", year_i, "projections started ----\n", sep = " "))
+  
+  EpredY_i <- EpredY_list[[i]]
+  pa_hindcast_i <- dplyr::filter(pa_hindcast, Year == all_of(year_i))
+  
+  sp_tot <- ncol(EpredY_i)
+  sp_proj <- 0
+  
+  grid_i <- dplyr::filter(grid, Year == all_of(year_i))
+  xy.grid <- as.matrix(cbind(grid_i$Lon, grid_i$Lat))
+  XData.grid <- dplyr::select(grid_i, -Lon, -Lat)
+  
+  # j <- 11
+  
+  for (j in 7:ncol(pa_hindcast_i)){
+    
+    taxon_j <- colnames(pa_hindcast_i[j])
+    
+    pa_hindcast_j <- dplyr:: select(pa_hindcast_i, Lon, Lat, all_of(taxon_j))
+    indexNames <- which(pa_hindcast_j[3] == 0)
+    pa_hindcast_j <- pa_hindcast_j[-indexNames,]
+    
+    #  pred_sp <- EpredY_i[, 1]
+    pred_sp <- EpredY_i[, taxon_j]
+    mapData <- data.frame(xy.grid, pred_sp)
+    colnames(mapData) <- c("Lon", "Lat", "pred_sp")
+    sp_j <- sub("_", " ", taxon_j)
+    
+    pred_export <- mapData
+    pred_export$taxon <- taxon_j
+    pred_export$Year <- year_i
+    
+    try(dir.create(paste0(dataDir, "/grid/predictions")))
+    write.csv(pred_export, paste0(dataDir, "/grid/predictions/df_suitability_", taxon_j, "_", year_i, ".csv"), row.names = F)
+    
+    
+    mapData_raster <- rasterFromXYZ(mapData, digits = 3)
+    names(mapData_raster) <- paste0("suitability_poly_traits_3_", taxon_j, "_", year_i)
+    crs(mapData_raster) <- "+proj=longlat +datum=WGS84"
+    try(dir.create(paste0(dataDir, "/grid/predictions/raster")))
+    writeRaster(mapData_raster, paste0(dataDir, "/grid/predictions/raster/suitability_poly_traits_3bis_", taxon_j, "_", year_i),
+                overwrite = TRUE)
+    
+    sp <- ggplot(world)  +
+      geom_tile(data = mapData, 
+                  aes(x = Lon, y = Lat, fill  = pred_sp)) +
+      geom_point(data = pa_hindcast_j, 
+                 aes(x = Lon, y = Lat), 
+                 col = "black", 
+                 size = 2) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(mapData$Lon), max(mapData$Lon)), 
+           ylim = c(min(mapData$Lat), max(mapData$Lat))) +
+      theme_bw(100) +
+      theme(panel.grid = element_blank(),
+            axis.title = element_blank(),
+            axis.ticks = element_blank(),
+            axis.text = element_blank(),
+            legend.position = "bottom") +
+      labs(title = paste(sp_j, "-", year_i, sep = " "), 
+           fill = "Presence\nprobability   ") +
+      scale_fill_gradientn(colors = c("#440154FF", "#39568CFF", "#1F968BFF", "#73D055FF", "#FDE725FF"), 
+                       limits = c(0, 1)) +
+      guides(fill = guide_colorbar(barwidth = 65,
+                                   barheight = 3))
+    
+    try(dir.create(paste0(MFDir,"/", taxon_j), recursive = T))
+    
+    try(dev.off())  
+    png(paste0(MFDir,"/", taxon_j, "/", taxon_j, "_", year_i, "_poly_traits_3bis.png"), height = 3000, width = 2100)
+    print(sp)
+    dev.off()
+    
+    sp_proj <- sp_proj + 1
+    
+    cat(paste( "----", sp_proj, "/", sp_tot, "species projected ----\n", sep = " "))
+  }
+}
+```
+
+# SPECIES RICHNESS, RCP, CWM
+
+## Data
+```{r}
+load(paste0(MFDir,"/mean_predictions/EpredY_list_traits_phylo_3.Rdata"))
+world <- ne_countries(scale = "medium", returnclass = "sf")
+grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
+grid <- grid[, -1]
+ts <- levels(as.factor(grid$Year))
+```
+
+## Maps
+```{r}
+for (i in 1:length(ts)){
+  year_i <- as.numeric(ts[i])
+  grid_i <- dplyr::filter(grid, Year == year_i)
+  
+  cat(paste("----", Sys.time(), "----", year_i, "species richness projections started ----\n", sep = " "))
+  
+  
+  EpredY_i <- EpredY_list[[i]]
+  S_i <- rowSums(EpredY_i)
+  predT_i <- (EpredY_i%*%m$Tr) / matrix(rep(S_i, m$nt), ncol = m$nt) 
+  
+  RCP_i <- kmeans(EpredY_i, 4)
+  MCS <- matrix(NA, m$ns, 4)
+  for (i in 1:4){
+    MCS[, i] <- names(rev(sort(RCP_i$centers[i, ])))
+    }
+  colnames(MCS) = c("Region 1","Region 2","Region 3", "Region 4")
+  MCS[1:3, ]
+  
+  mapData_i <- data.frame(grid_i[, 2:5], S_i, predT_i, RCP_i$cluster)
+  
+  try(dir.create(paste0(dataDir, "/grid/predictions")))
+  write.csv(mapData_i, paste0(dataDir, "/grid/predictions/community/df_S_RCP_CWM_", year_i, ".csv"), row.names = F)
+    
+    S <- ggplot(world)  +
+      geom_tile(data = mapData_i, 
+                  aes(x = Lon, y = Lat, fill  = S_i)) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(mapData_i$Lon), max(mapData_i$Lon)), 
+           ylim = c(min(mapData_i$Lat), max(mapData_i$Lat))) +
+      theme_bw(30) +
+      theme(panel.grid = element_blank()) +
+      labs(title = paste("Predicted species richness -", year_i, sep = " "), 
+           fill = "Species richness    ")+ 
+      xlab("Longitude") + 
+      ylab("Latitude") +
+      scale_fill_gradientn(colors = c("#440154FF", "#39568CFF", "#1F968BFF", "#73D055FF", "#FDE725FF"), 
+                       limits = c(0, 6)) +
+      theme(legend.position = "bottom") +
+      guides(fill = guide_colorbar(barwidth = 30))
+    
+    try(dir.create(paste0(MFDir,"/species_richness"), recursive = T))
+    
+    try(dev.off())  
+    png(paste0(MFDir,"/species_richness/S_", year_i, "_poly_traits_3.png"), height = 1200, width = 900)
+    print(S)
+    dev.off()
+    
+    RCP <- ggplot(world)  +
+      geom_tile(data = mapData_i, 
+                  aes(x = Lon, y = Lat, fill  = as.factor(RCP_i.cluster))) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(mapData_i$Lon), max(mapData_i$Lon)), 
+           ylim = c(min(mapData_i$Lat), max(mapData_i$Lat))) +
+      theme_bw(30) +
+      theme(panel.grid = element_blank()) +
+      labs(title = paste("Region of common profil -", year_i, sep = " "), 
+           fill = "Region of common profil    ")+ 
+      xlab("Longitude") + 
+      ylab("Latitude") +
+      scale_fill_brewer(palette = 1) +
+      theme(legend.position = "bottom") 
+    
+    try(dir.create(paste0(MFDir,"/region_of_common_profil"), recursive = T))
+    
+    try(dev.off())  
+    png(paste0(MFDir,"/region_of_common_profil/RCP_", year_i, "_poly_traits_3.png"), height = 1200, width = 900)
+    print(RCP)
+    dev.off()
+    
+     tl <- ggplot(world)  +
+      geom_tile(data = mapData_i, 
+                  aes(x = Lon, y = Lat, fill  = tl)) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(mapData_i$Lon), max(mapData_i$Lon)), 
+           ylim = c(min(mapData_i$Lat), max(mapData_i$Lat))) +
+      theme_bw(30) +
+      theme(panel.grid = element_blank()) +
+      labs(title = paste("Predicted CWM for trophic level -", year_i, sep = " "), 
+           fill = "CWM - trophic level    ")+ 
+      xlab("Longitude") + 
+      ylab("Latitude") +
+      scale_fill_gradientn(colors = c("#440154FF", "#39568CFF", "#1F968BFF", "#73D055FF", "#FDE725FF"), 
+                       limits = c(3.75, 4.01)) +
+      theme(legend.position = "bottom") +
+      guides(fill = guide_colorbar(barwidth = 30))
+    
+    try(dir.create(paste0(MFDir,"/CWM"), recursive = T))
+    
+    try(dev.off())  
+    png(paste0(MFDir,"/CWM/CWM_trophic_level_", year_i, "_poly_traits_3.png"), height = 1200, width = 900)
+    print(tl)
+    
+    fecundity <- ggplot(world)  +
+      geom_tile(data = mapData_i, 
+                  aes(x = Lon, y = Lat, fill  = fecundity)) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(mapData_i$Lon), max(mapData_i$Lon)), 
+           ylim = c(min(mapData_i$Lat), max(mapData_i$Lat))) +
+      theme_bw(30) +
+      theme(panel.grid = element_blank()) +
+      labs(title = paste("Predicted CWM for fecundity -", year_i, sep = " "), 
+           fill = "CWM - fecundity    ")+ 
+      xlab("Longitude") + 
+      ylab("Latitude") +
+      scale_fill_gradientn(colors = c("#440154FF", "#39568CFF", "#1F968BFF", "#73D055FF", "#FDE725FF"), 
+                       limits = c(51, 88)) +
+      theme(legend.position = "bottom") +
+      guides(fill = guide_colorbar(barwidth = 30))
+    
+    try(dev.off())  
+    png(paste0(MFDir,"/CWM/CWM_fecundity_", year_i, "_poly_traits_3.png"), height = 1200, width = 900)
+    print(fecundity)
+    
+    Lm <- ggplot(world)  +
+      geom_tile(data = mapData_i, 
+                  aes(x = Lon, y = Lat, fill  = length.maturity)) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(mapData_i$Lon), max(mapData_i$Lon)), 
+           ylim = c(min(mapData_i$Lat), max(mapData_i$Lat))) +
+      theme_bw(30) +
+      theme(panel.grid = element_blank()) +
+      labs(title = paste("Predicted CWM for length at maturity -", year_i, sep = " "), 
+           fill = "CWM - length at maturity    ")+ 
+      xlab("Longitude") + 
+      ylab("Latitude") +
+      scale_fill_gradientn(colors = c("#440154FF", "#39568CFF", "#1F968BFF", "#73D055FF", "#FDE725FF"), 
+                       limits = c(57, 71)) +
+      theme(legend.position = "bottom") +
+      guides(fill = guide_colorbar(barwidth = 30))
+    
+    try(dev.off())  
+    png(paste0(MFDir,"/CWM/CWM_length_at_maturity_", year_i, "_poly_traits_3.png"), height = 1200, width = 900)
+    print(Lm)
+    
+    Lmax <- ggplot(world)  +
+      geom_tile(data = mapData_i, 
+                  aes(x = Lon, y = Lat, fill  = length.max)) +
+      geom_sf(data = world, 
+              fill = alpha("lightgrey", 1)) +
+      coord_sf(xlim = c(min(mapData_i$Lon), max(mapData_i$Lon)), 
+           ylim = c(min(mapData_i$Lat), max(mapData_i$Lat))) +
+      theme_bw(30) +
+      theme(panel.grid = element_blank()) +
+      labs(title = paste("Predicted CWM for maximal length -", year_i, sep = " "), 
+           fill = "CWM - maximal length    ")+ 
+      xlab("Longitude") + 
+      ylab("Latitude") +
+      scale_fill_gradientn(colors = c("#440154FF", "#39568CFF", "#1F968BFF", "#73D055FF", "#FDE725FF"), 
+                       limits = c(76, 111)) +
+      theme(legend.position = "bottom") +
+      guides(fill = guide_colorbar(barwidth = 30))
+    
+    try(dev.off())  
+    png(paste0(MFDir,"/CWM/CWM_maximal_length_", year_i, "_poly_traits_3.png"), height = 1200, width = 900)
+    print(Lmax)
+    
+    try(dev.off)
+}
+```
+
+# ENVIRONMENTAL PARAMETERS TREND
+
+## Within PCA
+```{r}
+grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
+grid <- grid[, -1]
+```
+
+```{r}
+grid$class <- as.factor(grid$id)
+# grid$class <- factor(ceiling(depth / 10) * 10)
+
+centered_data <- grid[, 5:11] %>%
+  group_by(class) %>%
+  mutate(across(everything(), ~ . - mean(.)))
+
+res.pca <- PCA(centered_data[, 1:6], scale.unit = F)
+coord_pca <- cbind(grid, res.pca$ind$coord)
+```
+```{r}
+fviz_contrib(res.pca, choice = "var", axes = 1:2, top = 10)
+```
+
+```{r}
+try(dev.off())
+png("./output/context/environmental_variables/PCA_fond_within.png", width = 2600, height = 2100)
+
+fviz_pca_var(res.pca, col.var = "contrib", geom = c("point"),
+             gradient.cols = c("#440154FF","#39568CFF","#1F968BFF","#73D055FF","#FDE725FF"),
+             repel = T, labelsize = 20, pointsize = 15,
+             ggtheme = theme_bw(150) +
+                       theme(panel.grid = element_blank(),
+                             title = element_blank(),
+                             axis.title = element_text(size = 100),
+                             axis.text = element_text(size = 100),
+                             legend.title = element_blank(),
+                             legend.text = element_text(size = 100),
+                             legend.position = "bottom"))
+dev.off()
+```
+```{r}
+png(paste0("./output/context/environmental_variables/F1a_legend_within.png"), height = 2000, width = 200)
+
+ncol <- 1000
+ColorRamp <- rev(viridis(ncol))
+par(mar = c(1, 1, 1, 1))
+legend_image <- as.raster(matrix(ColorRamp, ncol = 1))
+plot(c(0, 2), c(-0.1, 1), type = "n", axes = F, xlab = "", ylab = "")
+#mtext("Predicted extinction risk", side = 2, cex = 0.9 * cexMain, line = -1)
+rasterImage(legend_image, xleft = 0, ybottom = 0, xright = 1, ytop = 1)
+heights <- seq(0, 1, by = 0.5)
+for (i in 1:length(heights)) {
+  lines(x = c(0, 1), y = rep(heights[i], 2), lwd = 0.5)
+}
+
+dev.off()
+```
+
+## Dim.
+```{r}
+trend_cell <- data.frame(id = NA, Sen = NA, p = NA)
+
+grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
+grid <- grid[, -1]
+
+coord_pca <- read.csv(paste0(dataDir, "/coord_pca.csv"))
+
+for (i in levels(as.factor(coord_pca$id))){
+  cell_i <- dplyr::filter(coord_pca, id == i)
+  
+  attach(cell_i)
+  cell_i <- cell_i[order(Year),]
+  detach(cell_i)
+ 
+  try(test_i <- sens.slope(cell_i$Dim.1, conf.level = 0.95))
+  
+  trend_i <- data.frame(Sen = test_i$estimates, pvalue = test_i$p.value, id = i)
+  
+  
+  if(trend_i$pvalue < 0.05){
+    trend_cell <- rbind(trend_cell, data.frame(id = i, Sen = test_i$estimates, p = trend_i$pvalue))
+    
+  }else{
+    trend_cell <- rbind(trend_cell, data.frame(id = i, Sen = NA, p = NA))
+  }
+}
+
+trend_cell <- trend_cell[-1, ]
+trend_cell <- dplyr::filter(trend_cell, id %in% grid$id)
+trend_cell <- separate(trend_cell, id, c("Lon", "Lat"), sep = "_")
+trend_cell$Lon <- as.numeric(trend_cell$Lon)
+trend_cell$Lat <- as.numeric(trend_cell$Lat)
+
+attach(trend_cell)
+trend_cell <- trend_cell[order(Sen),]
+detach(trend_cell)
+
+write.csv(trend_cell, paste0(dataDir, "/PCA_within_trend_depth_dim1.csv"), row.names = F)
+```
+
+## Map
+```{r}
+trend_cell <- read.csv(paste0(dataDir, "/PCA_trend.csv"))
+```
+```{r}
+map <- ggplot(world) + 
+  geom_tile(data = trend_cell, aes(x = Lon, y = Lat, fill = Sen)) +
+  geom_sf(data = world, fill = alpha("lightgrey", 1)) +
+  coord_sf(xlim = c(min(trend_cell$Lon), max(trend_cell$Lon)), 
+           ylim = c(min(trend_cell$Lat), max(trend_cell$Lat)))+
+  theme_bw(150) +
+  theme(panel.grid = element_blank(),
+        legend.position = "bottom",
+        axis.title = element_blank(), legend.title = element_blank()) +
+  guides(fill = guide_colourbar(barwidth = 65,
+                                barheight = 3)) +
+  scale_fill_gradientn(na.value = "#eeeeee", 
+                       colors = c("#f8e604", "#f87b05", "#ff4f00", "#ff3800", "#f60404"),
+                       breaks = c(min(trend_cell$Sen, na.rm = T), 0, max(trend_cell$Sen, na.rm = T)))
+
+try(dev.off())
+png("./output/context/environmental_variables/Dim2_trend_within_lat.png", width = 2100, height = 3000)
+print(map)
+dev.off()
+```

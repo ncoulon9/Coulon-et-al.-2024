@@ -1,0 +1,220 @@
+---
+title: "02_model_pa_traits_phylo"
+author: "Noemie Coulon"
+date: "14/02/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# LOADING PACKAGES & FUNCTIONS
+```{r}
+if(!require(tidyverse)){install.packages("tidyverse"); library(tidyverse)}
+if(!require(knitr)){install.packages("knitr"); library(knitr)}
+if(!require(Hmsc)){install.packages("Hmsc"); library(Hmsc)}
+```
+
+# SET DIRECTORIES
+```{r}
+localDir = "." 
+dataDir = file.path(localDir, "data") 
+ModelDir = file.path(localDir, "models") 
+MixingDir = file.path(localDir, "mixing")
+MFDir = file.path(localDir, "model_fit")
+```
+
+# LOADING DATA
+
+## Presence-absence data
+```{r}
+data<- read.csv(file.path(dataDir, "pa_grid_new.csv"), header = T)
+data$Lon <- round(data$Lon, digits = 5)
+data$Lat <- round(data$Lat, digits = 5)
+data <- unite(data, col = id, Lon, Lat, Year, remove = F)
+```
+
+## Environmental data
+```{r}
+envt <- read.csv(file.path(dataDir, "envt_var_selected_df.csv"), header = T)
+envt$Lon <- round(envt$Lon, digits = 5)
+envt$Lat <- round(envt$Lat, digits = 5)
+envt <- unite(envt, col = id, Lon, Lat, Year, remove = F)
+```
+
+## Phylogeny data
+```{r}
+phyloTree <- ape::read.tree(file.path(dataDir, "cons_full_resolved_10K_tree.txt"))
+```
+
+## Trait data
+```{r}
+traits <- read_delim(paste0(dataDir, "/all_traits.csv"), delim = ";", escape_double = FALSE, trim_ws = TRUE)
+
+TrData <- traits
+TrData <- dplyr::select(TrData, 
+                        tl,
+                        fecundity,
+                        length.max,
+                        length.maturity,
+                        bathy.pref,
+                        lat.distri)
+rownames(TrData) <- traits$taxon
+```
+
+# FILTER DATA
+
+## Environmental information for presence-abscence data
+```{r}
+envt$depth <- -envt$depth
+envt <- dplyr::filter(envt, depth < 200)
+
+envt <- dplyr::filter(envt, id %in% data$id)
+attach(envt)
+envt <- envt[order(id),]
+detach(envt)
+```
+
+## Presence-absence data for which environmental information is available
+```{r}
+data <- dplyr::filter(data, id %in% envt$id)
+attach(data)
+data <- data[order(id),]
+detach(data)
+```
+
+# SAVE HINDCAST 
+```{r}
+write.csv(data, paste0(dataDir, "/hindcast/pa_hindcast_traits.csv"), row.names = F)
+write.csv(envt, paste0(dataDir, "/hindcast/envt_hindcast_traits.csv"), row.names = F)
+```
+
+# DATA MATRICES
+
+## Species data
+```{r}
+Y <- (data[, 7:ncol(data)])
+Y <- Y[order(names(Y))]
+Y <- as.matrix(Y)
+```
+
+## Environmental covariates 
+```{r}
+envt <- dplyr::select(envt, -substrate)
+XData <- envt[, 5:ncol(envt)]
+```
+
+# MODEL CONTEXT
+
+## Study design
+```{r}
+studyDesign <- matrix(NA, nrow(Y), 3)
+studyDesign[, 1] <- sprintf("Quarter_%s", data$Quarter)
+studyDesign[, 2] <- sprintf("Gear_%s", data$Gear)
+studyDesign[, 3] <- sprintf('Year_%.3d', data$Year)
+studyDesign <- as.data.frame(studyDesign)
+colnames(studyDesign) <- c("Quarter", "Gear", "Year")
+studyDesign[, 1] <- as.factor(studyDesign[, 1])
+studyDesign[, 2] <- as.factor(studyDesign[, 2])
+studyDesign[, 3] <- as.factor(studyDesign[, 3])
+```
+
+## Spatially structured variables
+
+### Quarters
+```{r}
+quarters <- levels(studyDesign[, 1])
+nquarters <- length(quarters)
+xy <- matrix(0, nrow = nquarters, ncol = 2)
+
+for (i in 1:nquarters) {
+  rows <- studyDesign[, 1] == quarters[[i]]
+  xy[i, 1] <- mean(data[rows, ]$Lon)
+  xy[i, 2] <- mean(data[rows, ]$Lat)
+}
+colnames(xy) <- c("Lon", "Lat")
+
+sRLq <- xy
+rownames(sRLq) <- quarters
+rLq <- HmscRandomLevel(sData = sRLq)
+rLq$nfMin <- 5
+rLq$nfMax <- 10
+```
+
+### Gears
+```{r}
+gears <- levels(studyDesign[, 2])
+ngears <- length(gears)
+xy <- matrix(0, nrow = ngears, ncol = 2)
+
+for (i in 1:ngears) {
+  rows <- studyDesign[, 2] == gears[[i]]
+  xy[i, 1] <- mean(data[rows, ]$Lon)
+  xy[i, 2] <- mean(data[rows, ]$Lat)
+}
+colnames(xy) <- c("Lon", "Lat")
+
+sRLg <- xy
+rownames(sRLg) <- gears
+rLg <- HmscRandomLevel(sData = sRLg)
+rLg$nfMin <- 5
+rLg$nfMax <- 10
+```
+
+
+# MODEL
+
+## Formula
+
+As default, scaling is applied for X and Tr matrices and the estimated parameters are back-transformed so that the estimated parameters correspond to the original X and Tr matrices
+
+```{r}
+Xformula = ~ slope + depth + max_SST_summer +  max_ph_summer + substrate_diversity + AMO
+```
+
+```{r}
+TrFormula = ~ tl + fecundity + length.max + length.maturity+ bathy.pref + lat.distri
+```
+
+```{r}
+mod <- Hmsc(Y = Y,
+          XData = XData, XFormula = Xformula,
+          TrData = TrData, TrFormula = TrFormula,
+          phyloTree = phyloTree,
+          distr = "probit", 
+          studyDesign = studyDesign, ranLevels = list(Quarter = rLq, Gear = rLg))
+```
+
+## Run MCMC
+
+The MCMC sampling scheme can be controlled by adjusting the desired number of posterior samples, the thinning interval (number of steps of the MCMC chain between each sample), the length of the transient to
+be cut from the chain before sampling, and the number of chains.
+
+Default priors : We sampled the posterior distribution with four MCMC chains, each of which were run for 150,000 iterations, out of which the first 50,000 were removed as burn-in and the remaining ones were thinned by 100 to yield 1000 posterior samples per chain, and thus 4000
+posterior samples in total.
+
+```{r}
+thin<-50 # the number of MCMC steps between each recording of samples from the posterior
+samples<-1000 # the number of MCMC samples to be obtained in each chain
+nChains<-2 # number of independent MCMC chains to be run
+adaptNf <- rep(ceiling(0.4*samples*thin),1) # a vector of length n_r with number of MCMC steps at which the adaptation of the number of latent factors is conducted
+transient <- 500*thin  # the number of MCMC steps that are executed before starting recording posterior samples 
+verbose<-500*thin
+set.seed(1)
+ptm = proc.time() 
+```
+
+```{r}
+memory.size(8000000000000)
+m = Hmsc::sampleMcmc(hM = mod, samples = samples, 
+               thin = thin,
+               transient =transient,
+               nChains = nChains,
+               verbose=verbose,
+               initPar = "fixed effects")
+
+computational.time = proc.time() - ptm
+
+filename = file.path(ModelDir, paste0("traits_phylo_", as.character(m), "_pa_probit_thin_", ... = as.character(thin), "_samples_", as.character(samples), ".Rdata"))
+
+save(m, file = filename, computational.time)
+```
+

@@ -1,0 +1,134 @@
+---
+title: "07_fishing_effort"
+author: "Noemie Coulon"
+date: '2022-06-14'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# LOADING PACKAGE
+```{r}
+if(!require(tidyverse)){install.packages("tidyverse"); library(tidyverse)}
+if(!require(raster)){install.packages("raster"); library(raster)}
+if(!require(ncdf4)){install.packages("ncdf4"); library(ncdf4)}
+if(!require(Hmsc)){install.packages("Hmsc"); library(Hmsc)}
+if(!require(sf)){install.packages("sf"); library(sf)}
+if(!require(ggplot2)){install.packages("ggplot2"); library(ggplot2)}
+if(!require(rnaturalearth)){install.packages("rnaturalearth"); library(rnaturalearth)}
+if(!require(rnaturalearthdata)){install.packages("rnaturalearthdata"); library(rnaturalearthdata)}
+if(!require(ggthemes)){install.packages("ggthemes"); library(ggthemes)}
+if(!require(rgeos)){install.packages("rgeos"); library(rgeos)}
+if(!require(Kendall)){install.packages("Kendall"); library(Kendall)}
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+```
+
+# SET DIRECTORIES
+```{r}
+localDir = "." 
+dataDir = file.path(localDir, "data") 
+ModelDir = file.path(localDir, "models") 
+MixingDir = file.path(localDir, "mixing")
+MFDir = file.path(localDir, "model_fit")
+```
+
+# LOADING DATA
+
+## Fishing effort
+```{r}
+fishing <- read.csv(paste0(dataDir, "/fishing_effort.csv"))
+```
+
+## Predictions
+```{r}
+all_files <- list.files(paste0(dataDir, "/grid/predictions/"))
+all_files <- all_files[grep(".grd", all_files)]
+used_files <- c()
+
+for (i in levels(as.factor(fishing$Year))){
+  year_i <- i
+  used_files <- c(used_files, 
+                  all_files[grep(year_i, all_files)])
+}
+
+pred <- stack()
+
+for (i in 1:length(used_files)){
+  pred_i <- stack(paste0(dataDir, "/grid/predictions/", used_files[i]))
+  pred <- stack(pred, pred_i)
+}
+```
+
+# RASTERIZE
+
+## Convert ICES grid into raster
+```{r}
+ICES <- distinct(fishing, Rect, .keep_all = TRUE)
+ICES <- dplyr::select(ICES, Lon, Lat, Year)
+
+fishing <- dplyr::select(fishing, Rect, Lon, Lat, fishing_effort)
+
+ICES_raster <- rasterFromXYZ(ICES)
+plot(ICES_raster)
+ICES <- ICES[, -3]
+```
+
+## Crop
+```{r}
+pred <- crop(pred, ICES_raster)
+ICES_raster <- crop(ICES_raster, pred)
+```
+
+## Resample
+```{r}
+pred_resample_raster <- resample(x = pred, 
+                          y = ICES_raster)
+
+plot(pred_resample_raster[[1]])
+```
+
+## Remake a dataframe
+```{r}
+pred_resample <- data.frame(Lon = NA, 
+                      Lat = NA, 
+                      Year = NA,
+                      taxon = NA,
+                      suitability = NA)
+
+for (i in 1:dim(pred_resample_raster)[3]){
+  pred_resample_i <- as.data.frame(pred_resample_raster[[i]], xy = T)
+  pred_resample_i <- na.omit(pred_resample_i)
+  id <- colnames(pred_resample_i)[3]
+  id <- as.vector(sapply (strsplit (id, split = "_"), "["))
+  colnames(pred_resample_i) <- c("Lon",
+                                 "Lat",
+                                 id[1])
+  pred_resample_i$taxon = paste(id[2], id[3], sep = "_")
+  pred_resample_i$Year <- id[4]
+  pred_resample_i <- relocate(pred_resample_i, Year, .after = Lat)
+  
+  pred_resample <- full_join(pred_resample, pred_resample_i)
+  
+}
+
+pred_resample <- pred_resample[-1,]
+pred_resample <- pivot_wider(pred_resample, names_from = taxon, values_from = suitability) 
+```
+
+# JOIN FISHING EFFORT & SUITABILITY
+```{r}
+fish_suit <- merge(fishing, pred_resample, copy = F)
+fish_suit <- unite(fish_suit, id, c(Rect,Lon, Lat, Year), remove = F)
+fish_suit <- distinct(fish_suit, id, .keep_all = T)
+```
+
+# STATISTICS
+```{r}
+library(mgcv)
+for (i in 7:ncol(fish_suit)){
+  model <- gam(fish_suit[, i] ~ fishing_effort + s(Lon, Lat), data = fish_suit)
+  print(summary(model))
+}
+```
+
