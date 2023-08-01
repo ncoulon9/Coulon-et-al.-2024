@@ -57,24 +57,6 @@ grid$depth <- abs(grid$depth)
 grid <- dplyr::select(grid, -substrate)
 ```
 
-# GRADIENT
-```{r}
-focalVariable <- colnames(grid[, 5:ncol(grid)])
-
-try(dir.create(paste0("./output/traits_phylo_3/Gradient"), recursive = T))
-
-for (i in 1:length(focalVariable)){
-   var_i <- focalVariable[i]
-   Gradient = constructGradient(m, focalVariable = var_i)
-   predY = predict(m, XData = Gradient$XDataNew, studyDesign = Gradient$studyDesignNew,
-ranLevels = Gradient$rLNew, expected = T)
-   png(paste0("./output/traits_phylo_3/Gradient/focalVariable_", var_i, ".png"), height = 900, width = 1200) 
-   plotGradient(m, Gradient, pred = predY, measure="S", las=1, showData = T, main = 'Species richness (measure="S")')
-   dev.off()
-}
-```
-
-
 # SPATIAL VARIATION 
 
 ## Do not extrapolate
@@ -201,7 +183,6 @@ grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
 grid <- grid[, -1]
 ts <- levels(as.factor(envt_hindcast$Year))
 ```
-
 ```{r}
 xy.grid <- as.matrix(cbind(grid$Lon, grid$Lat))
 XData.grid <- dplyr::select(grid, -Lon, -Lat)
@@ -229,9 +210,6 @@ for (i in 1:length(ts)){
 }
 
 save(EpredY_list, file = paste0(MFDir,"/mean_predictions/EpredY_list_traits_phylo_3.Rdata"))
-
-# save(EpredY_list, file = paste0(MFDir,"/mean_predictions/EpredY_list_A_radiata_only.Rdata"))
-# save(EpredY_list, file = paste0(MFDir,"/mean_predictions/EpredY_list_A_radiata_without.Rdata"))
 ```
 
 ## Maps
@@ -254,8 +232,6 @@ for (i in 1:length(ts)){
   xy.grid <- as.matrix(cbind(grid_i$Lon, grid_i$Lat))
   XData.grid <- dplyr::select(grid_i, -Lon, -Lat)
   
-  # j <- 11
-  
   for (j in 7:ncol(pa_hindcast_i)){
     
     taxon_j <- colnames(pa_hindcast_i[j])
@@ -264,7 +240,6 @@ for (i in 1:length(ts)){
     indexNames <- which(pa_hindcast_j[3] == 0)
     pa_hindcast_j <- pa_hindcast_j[-indexNames,]
     
-    #  pred_sp <- EpredY_i[, 1]
     pred_sp <- EpredY_i[, taxon_j]
     mapData <- data.frame(xy.grid, pred_sp)
     colnames(mapData) <- c("Lon", "Lat", "pred_sp")
@@ -303,7 +278,7 @@ for (i in 1:length(ts)){
             axis.text = element_blank(),
             legend.position = "bottom") +
       labs(title = paste(sp_j, "-", year_i, sep = " "), 
-           fill = "Presence\nprobability   ") +
+           fill = "Habitat\nsuitability   ") +
       scale_fill_gradientn(colors = c("#440154FF", "#39568CFF", "#1F968BFF", "#73D055FF", "#FDE725FF"), 
                        limits = c(0, 1)) +
       guides(fill = guide_colorbar(barwidth = 65,
@@ -313,6 +288,11 @@ for (i in 1:length(ts)){
     
     try(dev.off())  
     png(paste0(MFDir,"/", taxon_j, "/", taxon_j, "_", year_i, "_poly_traits_3bis.png"), height = 3000, width = 2100)
+    print(sp)
+    dev.off()
+    
+    try(dev.off())  
+    png(paste0(MFDir,"/GIFs/", taxon_j, "_", year_i, "_poly_traits_3bis.png"), height = 3000, width = 2100)
     print(sp)
     dev.off()
     
@@ -500,130 +480,4 @@ for (i in 1:length(ts)){
     
     try(dev.off)
 }
-```
-
-# ENVIRONMENTAL PARAMETERS TREND
-
-## Within PCA
-```{r}
-grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
-grid <- grid[, -1]
-```
-
-```{r}
-grid$class <- as.factor(grid$id)
-# grid$class <- factor(ceiling(depth / 10) * 10)
-
-centered_data <- grid[, 5:11] %>%
-  group_by(class) %>%
-  mutate(across(everything(), ~ . - mean(.)))
-
-res.pca <- PCA(centered_data[, 1:6], scale.unit = F)
-coord_pca <- cbind(grid, res.pca$ind$coord)
-```
-```{r}
-fviz_contrib(res.pca, choice = "var", axes = 1:2, top = 10)
-```
-
-```{r}
-try(dev.off())
-png("./output/context/environmental_variables/PCA_fond_within.png", width = 2600, height = 2100)
-
-fviz_pca_var(res.pca, col.var = "contrib", geom = c("point"),
-             gradient.cols = c("#440154FF","#39568CFF","#1F968BFF","#73D055FF","#FDE725FF"),
-             repel = T, labelsize = 20, pointsize = 15,
-             ggtheme = theme_bw(150) +
-                       theme(panel.grid = element_blank(),
-                             title = element_blank(),
-                             axis.title = element_text(size = 100),
-                             axis.text = element_text(size = 100),
-                             legend.title = element_blank(),
-                             legend.text = element_text(size = 100),
-                             legend.position = "bottom"))
-dev.off()
-```
-```{r}
-png(paste0("./output/context/environmental_variables/F1a_legend_within.png"), height = 2000, width = 200)
-
-ncol <- 1000
-ColorRamp <- rev(viridis(ncol))
-par(mar = c(1, 1, 1, 1))
-legend_image <- as.raster(matrix(ColorRamp, ncol = 1))
-plot(c(0, 2), c(-0.1, 1), type = "n", axes = F, xlab = "", ylab = "")
-#mtext("Predicted extinction risk", side = 2, cex = 0.9 * cexMain, line = -1)
-rasterImage(legend_image, xleft = 0, ybottom = 0, xright = 1, ytop = 1)
-heights <- seq(0, 1, by = 0.5)
-for (i in 1:length(heights)) {
-  lines(x = c(0, 1), y = rep(heights[i], 2), lwd = 0.5)
-}
-
-dev.off()
-```
-
-## Dim.
-```{r}
-trend_cell <- data.frame(id = NA, Sen = NA, p = NA)
-
-grid <- read.csv(paste0(dataDir, "/grid_projection.csv"))
-grid <- grid[, -1]
-
-coord_pca <- read.csv(paste0(dataDir, "/coord_pca.csv"))
-
-for (i in levels(as.factor(coord_pca$id))){
-  cell_i <- dplyr::filter(coord_pca, id == i)
-  
-  attach(cell_i)
-  cell_i <- cell_i[order(Year),]
-  detach(cell_i)
- 
-  try(test_i <- sens.slope(cell_i$Dim.1, conf.level = 0.95))
-  
-  trend_i <- data.frame(Sen = test_i$estimates, pvalue = test_i$p.value, id = i)
-  
-  
-  if(trend_i$pvalue < 0.05){
-    trend_cell <- rbind(trend_cell, data.frame(id = i, Sen = test_i$estimates, p = trend_i$pvalue))
-    
-  }else{
-    trend_cell <- rbind(trend_cell, data.frame(id = i, Sen = NA, p = NA))
-  }
-}
-
-trend_cell <- trend_cell[-1, ]
-trend_cell <- dplyr::filter(trend_cell, id %in% grid$id)
-trend_cell <- separate(trend_cell, id, c("Lon", "Lat"), sep = "_")
-trend_cell$Lon <- as.numeric(trend_cell$Lon)
-trend_cell$Lat <- as.numeric(trend_cell$Lat)
-
-attach(trend_cell)
-trend_cell <- trend_cell[order(Sen),]
-detach(trend_cell)
-
-write.csv(trend_cell, paste0(dataDir, "/PCA_within_trend_depth_dim1.csv"), row.names = F)
-```
-
-## Map
-```{r}
-trend_cell <- read.csv(paste0(dataDir, "/PCA_trend.csv"))
-```
-```{r}
-map <- ggplot(world) + 
-  geom_tile(data = trend_cell, aes(x = Lon, y = Lat, fill = Sen)) +
-  geom_sf(data = world, fill = alpha("lightgrey", 1)) +
-  coord_sf(xlim = c(min(trend_cell$Lon), max(trend_cell$Lon)), 
-           ylim = c(min(trend_cell$Lat), max(trend_cell$Lat)))+
-  theme_bw(150) +
-  theme(panel.grid = element_blank(),
-        legend.position = "bottom",
-        axis.title = element_blank(), legend.title = element_blank()) +
-  guides(fill = guide_colourbar(barwidth = 65,
-                                barheight = 3)) +
-  scale_fill_gradientn(na.value = "#eeeeee", 
-                       colors = c("#f8e604", "#f87b05", "#ff4f00", "#ff3800", "#f60404"),
-                       breaks = c(min(trend_cell$Sen, na.rm = T), 0, max(trend_cell$Sen, na.rm = T)))
-
-try(dev.off())
-png("./output/context/environmental_variables/Dim2_trend_within_lat.png", width = 2100, height = 3000)
-print(map)
-dev.off()
 ```

@@ -1,7 +1,8 @@
 ---
 title: "06_change_in_distribution_area"
+author: "Noemie Coulon"
+date: "03/07/2022"
 output: html_document
-date: '2022-03-07'
 editor_options: 
   chunk_output_type: console
 ---
@@ -191,8 +192,6 @@ try(dev.off())
     print(area)
     dev.off() 
 ```
-
-
 
 # PRESENCE PROBABILITY IN SPACE
 
@@ -414,7 +413,7 @@ trend_stat
 
 ### Plot - change
 
-Dans le système géodésique WGS 84, au niveau de 54° de latitude nord, un degré de longitude équivaut à 65,576 km
+In the WGS 84 geodetic system, at 54° north latitude, one degree of longitude is equivalent to 65.576 km.
 
 ```{r}
 trend_stat <- read.csv(paste0(MFDir, "/centroides_time_series_stat_traits_3.csv"))
@@ -644,10 +643,12 @@ trend_stat <- filter(trend_stat, pvalue < 0.05)
 trend_stat
 ```
 
-
 # NICHE SHAPE
 
-## Function & data
+## Function 
+
+From Anthao et al. (2022)
+
 ```{r}
 # Niche position functions
 # polynomial responses of HMSC beta parameters
@@ -703,6 +704,8 @@ check_beta_trend <- function(LpredDeriv){
   
   return(c(Pr1,Pr2,Pr3))}
 ```
+
+## Data
 ```{r}
 load(paste0(ModelDir, "/pa_traits_phylo_probit_thin_3.RData"))
 envt <- read.csv(paste0(dataDir, "/hindcast/envt_hindcast_traits.csv"))
@@ -863,6 +866,3 @@ try(dev.off())
     print(plot)
     dev.off()
 ```
-
-
-

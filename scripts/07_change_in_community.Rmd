@@ -1,7 +1,7 @@
 ---
 title: "07_change_in_community"
 author: "Noemie Coulon"
-date: "2023-01-27"
+date: "27/01/2023"
 output: html_document
 editor_options: 
   chunk_output_type: console
@@ -179,7 +179,6 @@ trend_stat$Lon <- as.numeric(trend_stat$Lon)
 trend_stat$Lat <- as.numeric(trend_stat$Lat)
 trend_stat <- filter(trend_stat, pvalue < 0.05)
 ```
-
 
 ### CWM average per cell
 ```{r}

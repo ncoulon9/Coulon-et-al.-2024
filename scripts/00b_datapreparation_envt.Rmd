@@ -118,11 +118,6 @@ groups <- removeCollinearity(sub, plot = T,
                              method = "spearman")
 sel.groups <- groups[which(sapply(groups, length) > 1)]
 ```
-
-
-
-
-
 ```{r}
 envt <- stack(envt[[grep("SST_summer", names(envt))]],
               envt[[grep("max_ph_summer", names(envt))]],
@@ -139,8 +134,6 @@ envt <- stack(envt[[grep("SST_summer", names(envt))]],
               envt[["slope"]])
 writeRaster(envt, "./envt_var_selected_traits", overwrite = T)
 ```
-
-
 
 # REMAKE A DATAFRAME
 ```{r}
@@ -185,11 +178,11 @@ amo <- dplyr::select(amo, year, mean)
 colnames(amo) <- c("Year", "AMO")
 envt_df <- merge(envt_df, amo, by = "Year")
 ```
+
 # ADD SUBSTRATE
 ```{r}
 setwd(initial_wd)
 substrate <- read.table("./data/substrate_reclassified_parameter.txt")
-#substrate <- read.table("./data/substrate.txt")
 substrate <- dplyr::select(substrate, Lon, Lat, main_substrate, Shannon)
 colnames(substrate) <- c("Lon", "Lat", "substrate", "substrate_diversity")
 substrate <- na.omit(substrate)
@@ -290,7 +283,6 @@ print(depth)
 dev.off()
 ```
 
-
 ## SST summer
 ```{r}
 SST <- ggplot(world) + 
@@ -350,4 +342,3 @@ png("./output/context/environmental_variables/substrate_diversity.png", width = 
 print(substrate)
 dev.off()
 ```
-

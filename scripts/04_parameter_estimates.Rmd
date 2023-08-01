@@ -93,8 +93,6 @@ print(var)
 dev.off() 
 ```
 
-
-
 # COVARIATES EFFECTS
 
 ## Environment

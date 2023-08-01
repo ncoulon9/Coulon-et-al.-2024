@@ -159,7 +159,6 @@ rLg$nfMin <- 5
 rLg$nfMax <- 10
 ```
 
-
 # MODEL
 
 ## Formula
@@ -169,11 +168,9 @@ As default, scaling is applied for X and Tr matrices and the estimated parameter
 ```{r}
 Xformula = ~ slope + depth + max_SST_summer +  max_ph_summer + substrate_diversity + AMO
 ```
-
 ```{r}
 TrFormula = ~ tl + fecundity + length.max + length.maturity+ bathy.pref + lat.distri
 ```
-
 ```{r}
 mod <- Hmsc(Y = Y,
           XData = XData, XFormula = Xformula,
@@ -192,18 +189,16 @@ Default priors : We sampled the posterior distribution with four MCMC chains, ea
 posterior samples in total.
 
 ```{r}
-thin<-50 # the number of MCMC steps between each recording of samples from the posterior
-samples<-1000 # the number of MCMC samples to be obtained in each chain
-nChains<-2 # number of independent MCMC chains to be run
+thin <-50 # the number of MCMC steps between each recording of samples from the posterior
+samples <-1000 # the number of MCMC samples to be obtained in each chain
+nChains <-2 # number of independent MCMC chains to be run
 adaptNf <- rep(ceiling(0.4*samples*thin),1) # a vector of length n_r with number of MCMC steps at which the adaptation of the number of latent factors is conducted
 transient <- 500*thin  # the number of MCMC steps that are executed before starting recording posterior samples 
-verbose<-500*thin
+verbose <-500*thin
 set.seed(1)
 ptm = proc.time() 
 ```
-
 ```{r}
-memory.size(8000000000000)
 m = Hmsc::sampleMcmc(hM = mod, samples = samples, 
                thin = thin,
                transient =transient,

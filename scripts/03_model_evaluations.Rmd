@@ -95,7 +95,6 @@ Model has a relatively high AUC and hence relatively high power to discriminate 
 
 ## Predictive power 
 
-
 ### Cross-validation
 
 The model is refitted to a subset of data and predictions made for sites not included in the model fit. It asks how accurately the model is able to predict the data used for model fitting when applying leave-one-out cross-validation
@@ -107,8 +106,6 @@ save(predY, "predY_partition.Rdata")
 MFCV <- evaluateModelFit(hM = m, predY = predY)
 save(MFCV, "MFCV.Rdata")
 ```
-
-
 
 ### WAIC
 
@@ -128,16 +125,11 @@ load(paste0(ModelDir, "/pa_envt_probit_thin_50_samples_1000_poly_1.RData"))
 WAIC = computeWAIC(m)
 WAIC
 ```
-
-2.65
-
 ```{r}
 load(paste0(ModelDir, "/pa_envt_probit_thin_50_samples_1000_7bis.RData"))
 WAIC = computeWAIC(m)
 WAIC
 ```
-
-2.70
 
 # NULL MODEL
 
@@ -251,7 +243,6 @@ load(paste0(ModelDir, "/null_model.RData"))
 WAIC = computeWAIC(m)
 WAIC
 ```
-
 
 # CROSS VALIDATION
 
@@ -541,4 +532,3 @@ mat_stat
 write.csv(mat, paste0(MixingDir, "/confusion_matrix.csv"), row.names = F)
 write.csv(mat_stat, paste0(MixingDir, "/confusion_matrix_stat.csv"), row.names = F)
 ```
-

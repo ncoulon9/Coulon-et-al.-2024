@@ -313,8 +313,6 @@ write.csv(ab_pa,"./data/pa.csv", row.names = F)
 rm(list=ls())
 ```
 
-
-
 # SURVEY INVESTIGATION
 
 ## Plot surveys
@@ -433,9 +431,6 @@ pa$Gear[pa$Gear == "BT8"] <- "BTs"
 gears <- levels(as.factor(pa$Gear))
 gears
 
-#pa$BT4A <- 0
-#pa$BT4AI <- 0
-#pa$BT8 <- 0
 pa$GOV <- 0
 pa$BTs <- 0
 
@@ -566,9 +561,6 @@ for (i in 1:length(start_year)){
   colnames(df_i) <- c("Lon", "Lat", "Year", taxon, gears, quarter)
   tmp <- dplyr::select(df_i, all_of(c(gears,quarter)))
   tmp[tmp == 0] <- NA
-  #tmp["BT4A"][tmp["BT4A"] == 1] <- "BT4A"
-  #tmp["BT4AI"][tmp["BT4AI"] == 1] <- "BT4AI"
-  #tmp["BT8"][tmp["BT8"] == 1]  <- "BT8"
   tmp["BTs"][tmp["BTs"] == 1]  <- "BTs"
   tmp["GOV"][tmp["GOV"] == 1] <- "GOV"
   tmp["Q1"][tmp["Q1"] == 1] <- "Q1"
@@ -643,7 +635,6 @@ for (i in 4:ncol(tmp)){
 zero_inflation_sp
 ```
 
-
 ## Map of total species presence
 ```{r}
 data <- read.csv("./data/pa_grid_new.csv", header = T)
@@ -687,74 +678,3 @@ for (i in 7:ncol(data)){
     dev.off()
 }
 ```
-
-
-
-# A. RADIATA ISSUE
-```{r}
-ab <- read.csv("data/raw/abundance.csv", header = T)
-```
-
-The issue is in the Q3 and between BTS and NS-IBTS surveys
-
-```{r}
-ab <- dplyr::filter(ab, Quarter == 3)
-ab <- dplyr::filter(ab, Survey  %in% c("BTS", "NS-BTS"))
-```
-
-```{r}
-map_gears <- function(data){
-  gear_colab <- NULL
-  for(j in 1:nrow(data)){
-      if(data$Gear[j]=="BT4A"){
-        gear_colab <- c(gear_colab, "#bdea5a")
-      }else if(data$Gear[j]=="BT4AI"){
-        gear_colab <- c(gear_colab, "#625e49") 
-      }else if(data$Gear[j]=="BT8"){
-        gear_colab <- c(gear_colab, "#d4994a") 
-      }
-    }
-    gear_col<-c("#bdea5a", "#625e49", "#d4994a")
-    maps::map(database = "world", ylim=c(min(data$Lat)-7,max(data$Lat)+2),xlim=c(min(data$Lon)-10,max(data$Lon)+10),fill=TRUE,col="gray")
-    plot(data$Lon,data$Lat,col=gear_colab,pch=20,cex=1,xlab="Longitude",ylab="Latitude")
-    maps::map(database = "world", ylim=c(min(data$Lat)-7,max(data$Lat)+2),xlim=c(min(data$Lon)-10,max(data$Lon)+10),fill=TRUE,col="gray",add=T)
-    scalebar(d = 200, xy = c(min(data$Lon), min(data$Lat)), type = "bar", below = "km",lwd = 5, divs = 2, col = "black", cex = 0.85, lonlat = T)
-    legend(max(data$Lon)-2.5, max(data$Lat),bg="#FFFFFF",
-           legend=c("BT4A" , "BT4AI", "BT8"),
-           fill =gear_col, cex = 0.85, title = "Gears")
-}
-
-map_gears(ab)
-```
-
-Looking for difference between lands
-
-```{r}
-ab <- dplyr::filter(ab, Gear != "BT8")
-ab <- dplyr::filter(ab, Gear != "BT7")
-
-levels(as.factor(ab$Country))
-
-map_country <- function(data){
-  gear_colab <- NULL
-  for(j in 1:nrow(data)){
-      if(data$Gear[j]=="BT4A"){
-        gear_colab <- c(gear_colab, "#bdea5a")
-      }else if(data$Gear[j]=="BT4AI"){
-        gear_colab <- c(gear_colab, "#625e49") 
-      }
-  }
-    gear_col<-c("#bdea5a", "#625e49")
-    maps::map(database = "world", ylim=c(min(data$Lat)-7,max(data$Lat)+2),xlim=c(min(data$Lon)-10,max(data$Lon)+10),fill=TRUE,col="gray")
-    plot(data$Lon,data$Lat,col=gear_colab,pch=20,cex=1,xlab="Longitude",ylab="Latitude")
-    maps::map(database = "world", ylim=c(min(data$Lat)-7,max(data$Lat)+2),xlim=c(min(data$Lon)-10,max(data$Lon)+10),fill=TRUE,col="gray",add=T)
-    scalebar(d = 200, xy = c(min(data$Lon), min(data$Lat)), type = "bar", below = "km",lwd = 5, divs = 2, col = "black", cex = 0.85, lonlat = T)
-    legend(max(data$Lon)-2.5, max(data$Lat),bg="#FFFFFF",
-           legend= c("BT4A" , "BT4AI"),
-           fill =gear_col, cex = 0.85, title = "Gears")
-    title("BE, BEL, ENG, GB")
-}
-
-map_country(ab)
-```
-

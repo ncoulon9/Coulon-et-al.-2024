@@ -241,10 +241,9 @@ Xformula = ~ depth +
              substrate_diversity +
              AMO
 ```
-
 ```{r}
-mod <- Hmsc(Y=Y,
-          XData=XData, XFormula= Xformula,
+mod <- Hmsc(Y =Y,
+          XData = XData, XFormula = Xformula,
           distr = "probit", 
           studyDesign = studyDesign, ranLevels = list(Quarter = rLq, Gear = rLg))
 ```
@@ -258,16 +257,15 @@ Default priors : We sampled the posterior distribution with four MCMC chains, ea
 posterior samples in total.
 
 ```{r}
-thin<-50 # the number of MCMC steps between each recording of samples from the posterior
-samples<-1000 # the number of MCMC samples to be obtained in each chain
-nChains<-2 # number of independent MCMC chains to be run
+thin <- 50 # the number of MCMC steps between each recording of samples from the posterior
+samples <- 1000 # the number of MCMC samples to be obtained in each chain
+nChains <- 2 # number of independent MCMC chains to be run
 adaptNf <- rep(ceiling(0.4*samples*thin),1) # a vector of length n_r with number of MCMC steps at which the adaptation of the number of latent factors is conducted
 transient <- 500*thin  # the number of MCMC steps that are executed before starting recording posterior samples 
-verbose<-500*thin
+verbose <- 500*thin
 set.seed(1)
 ptm = proc.time() 
 ```
-
 ```{r}
 m = Hmsc::sampleMcmc(hM = mod, samples = samples, 
                thin = thin,
@@ -282,84 +280,3 @@ filename = file.path(ModelDir, paste("model_pa_probit_thin_", ... = as.character
 
 save(m, file=filename, computational.time)
 ```
-
-# MODEL CORRECTION
-
-
-Le modèle ne capture pas du tout la présence d'A. radiata.
-On essaye 2 approches :
-1- faire un modèle avec que A. radiata afin de savoir si les variables environnementales sont relevantes pour cette espèce
-2 - faire un modèle sans A. radiata afin de savoir si l'erreur se répète ailleurs ou non
-
-A. radiata is the 11th columns of data
-
-## Only with A. radiata
-```{r}
-Y_only <- as.matrix(data[, 11])
-```
-```{r}
-mod <- Hmsc(Y=Y_only,
-          XData=XData, XFormula= Xformula,
-          distr = "probit", 
-          studyDesign = studyDesign, ranLevels = list(Quarter = rLq, Gear = rLg))
-```
-```{r}
-m = Hmsc::sampleMcmc(hM = mod, samples = samples, 
-               thin = thin,
-               transient =transient,
-               nChains = nChains,
-               verbose=verbose,
-               initPar = "fixed effects")
-
-computational.time = proc.time() - ptm
-
-filename = file.path(ModelDir, paste("model_pa_probit_thin_", ... = as.character(thin), "_samples_", as.character(samples), "_A_radiatat_only.Rdata", sep = ""))
-
-save(m, file=filename, computational.time)
-```
-
-## Without A. radiata
-```{r}
-Y_without <- as.matrix(cbind(data[, 7:10], data[, 12:ncol(data)]))
-```
-```{r}
-mod <- Hmsc(Y = Y_without,
-          XData=XData, XFormula= Xformula,
-          distr = "probit", 
-          studyDesign = studyDesign, ranLevels = list(Quarter = rLq, Gear = rLg))
-```
-```{r}
-m = Hmsc::sampleMcmc(hM = mod, samples = samples, 
-               thin = thin,
-               transient =transient,
-               nChains = nChains,
-               verbose=verbose,
-               initPar = "fixed effects")
-
-computational.time = proc.time() - ptm
-
-filename = file.path(ModelDir, paste("model_pa_probit_thin_", ... = as.character(thin), "_samples_", as.character(samples), "_7.Rdata", sep = ""))
-
-save(m, file=filename, computational.time)
-```
-
-## GAM
-```{r}
-gam_df <- merge(data, envt)
-
-slope + depth + max_SST_summer + min_SST_winter + min_ph_summer + min_SBT_winter + AMO + substrate + substrate_diversity
-
-gam_mod <- mgcv::gam(Amblyraja_radiata ~ s(slope) + 
-                       s(depth) +
-                       s(max_SST_summer) +
-                       s(min_SST_winter) + 
-                       s(min_ph_summer) +
-                       s(min_SBT_winter) +
-                       s(AMO)+
-                       substrate + 
-                       s(substrate_diversity), data = gam_df, family = "binomial")
-coef(gam_mod)
-
-plot(gam_mod)
-```
-
